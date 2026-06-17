@@ -1,0 +1,21 @@
+{
+  "name": "margin",
+  "version": "1.0.0",
+  "description": "A block-based math notebook for building dependency graphs of definitions, lemmas, theorems, and remarks.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "bash build.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ypan-code-usc/margin.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^42.4.1",
+    "katex": "^0.17.0"
+  }
+}
