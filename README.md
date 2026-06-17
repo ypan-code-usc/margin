@@ -22,6 +22,11 @@ Write definitions, lemmas, theorems, and remarks; connect them with dependency e
 
 Grab the latest DMG from the [Releases](https://github.com/ypan-code-usc/margin/releases) page, open it, and drag **Margin.app** to `/Applications`.
 
+> **"Cannot be opened" error?** Because Margin is not yet notarized with Apple, macOS Gatekeeper may block the first launch. Run this once in Terminal, then double-click to open normally:
+> ```bash
+> xattr -cr /Applications/Margin.app
+> ```
+
 ---
 
 ## Features
