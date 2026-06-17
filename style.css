@@ -57,6 +57,10 @@ header{display:flex;align-items:center;gap:16px;padding:12px 22px;background:rgb
 .proj-sidebar-ft{border-top:1px solid var(--line-soft);padding:8px 6px;display:flex;flex-direction:column;gap:4px;flex-shrink:0}
 .ps-new-btn{width:100%;border:1px dashed var(--line);background:none;border-radius:8px;padding:7px 8px;font-size:12px;color:var(--ink-faint);cursor:pointer;display:flex;align-items:center;gap:6px;transition:.12s;white-space:nowrap;overflow:hidden}
 .ps-new-btn:hover{background:var(--surface-2);color:var(--ink);border-color:var(--ink-faint)}
+.ps-new-form{padding:2px 2px 4px;display:flex;flex-direction:column;gap:6px}
+.ps-new-form input{width:100%;box-sizing:border-box;border:1px solid var(--accent);border-radius:7px;padding:6px 9px;font-size:12.5px;font-family:var(--font-ui);background:var(--surface);color:var(--ink);outline:none}
+.ps-new-actions{display:flex;gap:5px}
+.ps-new-actions .btn{flex:1;font-size:12px;padding:5px 0}
 .proj-sidebar.collapsed .ps-title,.proj-sidebar.collapsed .pi-name,.proj-sidebar.collapsed .pi-del,
 .proj-sidebar.collapsed .proj-sidebar-ft,.proj-sidebar.collapsed .proj-sidebar-hd .ps-title{display:none}
 .proj-sidebar.collapsed .proj-list{padding:6px 4px}

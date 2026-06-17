@@ -36,6 +36,13 @@
       <div class="proj-list" id="projList"></div>
       <div class="proj-sidebar-ft">
         <button class="ps-new-btn" id="psNew"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>New project</button>
+        <div class="ps-new-form" id="psNewForm" style="display:none">
+          <input id="psNewName" type="text" placeholder="Project name…" autocomplete="off">
+          <div class="ps-new-actions">
+            <button class="btn primary" id="psNewConfirm">Create</button>
+            <button class="btn" id="psNewCancel">Cancel</button>
+          </div>
+        </div>
         <label class="ps-new-btn" title="Load project from file"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>Open file…<input type="file" id="psLoad" accept=".json" style="position:absolute;opacity:0;pointer-events:none"></label>
       </div>
     </div>

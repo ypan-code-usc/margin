@@ -993,6 +993,8 @@ function loadAll(){
   try{
     const raw=localStorage.getItem('margin-autosave'); if(!raw)return false;
     const s=JSON.parse(raw);
+    if(!s.projects?.length||!s.activeProjectId||!s.projectData?.[s.activeProjectId]?.nodes?.length)
+      {localStorage.removeItem('margin-autosave');return false;}
     projects.length=0; s.projects.forEach(p=>projects.push(p));
     Object.keys(projectData).forEach(k=>delete projectData[k]);
     Object.assign(projectData,s.projectData);
@@ -1614,13 +1616,22 @@ function typeset(node){if(window.renderMathInElement){try{renderMathInElement(no
     $('#psToggle').textContent=sidebar.classList.contains('collapsed')?'›':'‹';
   };
 
+  const psNewForm=$('#psNewForm'), psNewName=$('#psNewName');
   $('#psNew').onclick=()=>{
-    const name=prompt('Project name:','Untitled project');
-    if(name===null)return;
-    const id=newProject(name);
-    switchProject(id);
-    toast('New project "'+name+'" created.');
+    psNewForm.style.display=''; psNewName.value=''; psNewName.focus();
   };
+  function confirmNewProject(){
+    const name=(psNewName.value||'').trim()||'Untitled project';
+    psNewForm.style.display='none';
+    const id=newProject(name); switchProject(id);
+    toast('New project "'+name+'" created.');
+  }
+  $('#psNewConfirm').onclick=confirmNewProject;
+  $('#psNewCancel').onclick=()=>{ psNewForm.style.display='none'; };
+  psNewName.addEventListener('keydown',e=>{
+    if(e.key==='Enter') confirmNewProject();
+    if(e.key==='Escape'){ psNewForm.style.display='none'; }
+  });
 
   $('#psLoad').onchange=e=>{
     const f=e.target.files[0]; if(!f)return;

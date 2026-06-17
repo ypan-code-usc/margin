@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "margin-app",
+      "name": "margin",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "5174"],
-      "port": 5174
+      "runtimeArgs": ["/Users/yijiepan/Documents/margin_dmg/.claude/server.py"],
+      "port": 5175
     }
   ]
 }
