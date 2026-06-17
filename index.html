@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<!-- Margin — verified-math notebook (clean edition, no Lean/formalization features) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Margin</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><span class="mark">Margin<span class="caret">›</span></span></div>
+    <span class="doc" id="docName">—</span>
+    <span class="spacer"></span>
+    <div class="progress" id="progressWrap">
+      <span><b id="pcd">0</b>/<b id="pct">0</b> proved</span>
+      <span class="bar"><i id="pcb"></i></span>
+    </div>
+    <button class="btn primary" id="exportBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Export</button>
+  </header>
+
+  <div class="main">
+    <!-- Project sidebar -->
+    <div class="proj-sidebar" id="projSidebar">
+      <div class="proj-sidebar-hd">
+        <span class="ps-title">Workspace</span>
+        <button class="ps-toggle" id="psToggle" title="Collapse sidebar">‹</button>
+      </div>
+      <div class="proj-list" id="projList"></div>
+      <div class="proj-sidebar-ft">
+        <button class="ps-new-btn" id="psNew"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>New project</button>
+        <label class="ps-new-btn" title="Load project from file"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>Open file…<input type="file" id="psLoad" accept=".json" style="position:absolute;opacity:0;pointer-events:none"></label>
+      </div>
+    </div>
+
+    <!-- Graph fills full area -->
+    <div class="graphfull">
+      <div class="gcanvas"><svg class="graph" id="graph" role="img" aria-label="Dependency graph"></svg></div>
+
+      <!-- top-left: data controls -->
+      <div class="graph-databar databar">
+        <label class="btn file">Load<input type="file" id="loadJson" accept=".json,application/json"></label>
+        <label class="btn file" title="Import a blueprint as a collapsible knowledge set">Import set<input type="file" id="importSet" accept=".json,application/json"></label>
+        <button class="btn" id="dlJson">Save</button>
+        <button class="btn" id="resetJson">Reset</button>
+      </div>
+
+      <!-- left: relations panel (opens when an aggregate cross-set edge is clicked) -->
+      <div class="relations-panel" id="relPanel">
+        <div class="rp-hd">
+          <div class="rp-meta"><div class="rp-sub">Connection</div><div class="rp-title" id="rpTitle"></div></div>
+          <button class="rp-close" id="rpClose" aria-label="Close">×</button>
+        </div>
+        <div class="rp-body" id="rpBody"></div>
+      </div>
+
+      <!-- top-right: toolbar -->
+      <div class="graph-toolbar">
+        <button class="btn" id="connectBtn" title="Link mode: drag from one node to another to add a dependency">Link nodes</button>
+        <button class="btn" id="selectBtn" title="Select mode: click nodes to select them for grouping">Select</button>
+        <span id="groupControls" style="display:none;align-items:center;gap:6px;display:none">
+          <input id="groupName" class="group-name-input" type="text" placeholder="Set name…" maxlength="40">
+          <button class="btn accent" id="groupBtn">Group <span id="groupCount"></span></button>
+          <button class="btn" id="groupCancel">✕</button>
+        </span>
+        <button class="btn zoom-btn" id="zoomIn" title="Zoom in">+</button>
+        <button class="btn zoom-btn" id="zoomOut" title="Zoom out">−</button>
+        <button class="btn zoom-btn" id="zoomReset" title="Reset zoom">⊙</button>
+      </div>
+
+      <!-- bottom-left: legend -->
+      <div class="graph-legend-wrap">
+        <div class="legend" id="legend"></div>
+      </div>
+
+      <!-- bottom-right: add block FAB -->
+      <div class="graph-fab">
+        <div class="addmenu" id="addMenu">
+          <button data-kind="definition"><span class="k" style="background:var(--k-def)"></span>Definition</button>
+          <button data-kind="lemma"><span class="k" style="background:var(--k-lemma)"></span>Lemma</button>
+          <button data-kind="theorem"><span class="k" style="background:var(--k-thm)"></span>Theorem</button>
+          <button data-kind="remark"><span class="k" style="background:var(--k-remark)"></span>Remark</button>
+        </div>
+        <button class="btn primary" id="addBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add block</button>
+      </div>
+    </div>
+
+    <!-- Detail panel: slides in when a node is selected -->
+    <div class="detail-panel" id="detailPanel">
+      <div class="dp-hd">
+        <div class="dp-meta">
+          <div class="dp-kind-badge" id="dpKind"></div>
+          <div class="dp-title" id="dpTitle"></div>
+          <div class="chips" id="dpChips"></div>
+        </div>
+        <button class="dp-close" id="dpClose" aria-label="Close">×</button>
+      </div>
+      <div class="dp-body" id="dpBody"></div>
+      <div class="dp-footer">
+        <button class="btn primary" id="dpEdit">Edit</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Export modal (LaTeX only) -->
+<div class="scrim" id="scrim"><div class="modal">
+  <div class="mh"><h3>Export paper</h3>
+    <button class="x" id="cm" aria-label="Close">×</button></div>
+  <div class="prev"><div class="sheet"><h2 id="shT">—</h2><div class="au">draft generated from Margin · ✓ = proved</div><div id="shB"></div></div></div>
+  <div class="mf"><span class="muted" id="exM">Download a LaTeX source file for this project.</span><button class="btn" id="cm2">Close</button><button class="btn primary" id="dl">Download .tex</button></div>
+</div></div>
+
+<!-- Global knowledge set preview modal -->
+<div class="scrim" id="gsPreviewScrim">
+  <div class="gs-preview-modal">
+    <div class="mh">
+      <h3 id="gsPreviewTitle">Knowledge Set</h3>
+      <span class="gs-count-badge" id="gsPreviewCount"></span>
+      <button class="x" id="gsPreviewClose">×</button>
+    </div>
+    <div class="gs-node-list" id="gsPreviewList"></div>
+    <div class="mf">
+      <span style="font-size:11.5px;color:var(--ink-faint);flex:1" id="gsPreviewHint"></span>
+      <button class="btn" id="gsPreviewCancel">Cancel</button>
+      <button class="btn primary" id="gsPreviewImport">Import into project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit block modal -->
+<div class="scrim" id="editScrim">
+  <div class="emodal">
+    <div class="mh">
+      <h3 id="eMh">Edit block</h3>
+      <button class="x" id="eCancelX" aria-label="Close">×</button>
+    </div>
+    <div class="ebody">
+      <div class="eform">
+        <div class="efield">
+          <label>Kind</label>
+          <select id="eKind">
+            <option value="definition">Definition</option>
+            <option value="lemma">Lemma</option>
+            <option value="theorem">Theorem</option>
+            <option value="proposition">Proposition</option>
+            <option value="corollary">Corollary</option>
+            <option value="remark">Remark</option>
+          </select>
+        </div>
+        <div class="efield">
+          <label>Title</label>
+          <input id="eTitle" type="text" placeholder="e.g. Gauge equals support function">
+        </div>
+        <div class="efield">
+          <label>Statement <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint)">— LaTeX supported</span></label>
+          <textarea id="eStmt" rows="4" placeholder="For every $x$, \|x\|_K = \sup_{y \in K^\circ} \langle x, y \rangle."></textarea>
+        </div>
+        <div class="efield" id="eProofWrap">
+          <label>Proof sketch <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint)">— LaTeX supported</span></label>
+          <textarea id="eProof" rows="3" placeholder="Combine the radial–support duality…"></textarea>
+        </div>
+        <div class="efield">
+          <label>Dependencies</label>
+          <div class="edeps" id="eDepTags">
+            <span class="edep-suggest">
+              <input id="eDepInput" placeholder="Search…" autocomplete="off">
+              <div class="edrop" id="eDepDrop"></div>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="epreview">
+        <div style="font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;margin-bottom:10px">Live preview</div>
+        <div class="epv-block">
+          <div class="epv-kind" id="epKind">Definition</div>
+          <div class="epv-title" id="epTitle">—</div>
+          <div class="epv-stmt" id="epStmt"></div>
+          <div class="epv-proof" id="epProofWrap" style="display:none">
+            <b>proof</b><span id="epProof"></span>
+          </div>
+        </div>
+        <div class="epreview-label" style="font-size:11px;color:var(--ink-faint);margin-top:14px;line-height:1.5">
+          Preview renders live. The statement and proof support inline $…$ and display $$…$$ LaTeX.
+        </div>
+      </div>
+    </div>
+    <div class="emf">
+      <button class="btn" id="eCancelBtn">Cancel</button>
+      <button class="btn primary" id="eSaveBtn">Save block</button>
+      <button class="btn danger emf" id="eDeleteBtn" style="border-color:#E5C9C0;color:#B5503A;background:#F8EEEA;margin-left:auto">Delete block</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
