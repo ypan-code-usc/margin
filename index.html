@@ -22,6 +22,7 @@
       <span><b id="pcd">0</b>/<b id="pct">0</b> proved</span>
       <span class="bar"><i id="pcb"></i></span>
     </div>
+    <button class="btn" id="settingsBtn" title="Preferences" aria-label="Preferences"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="6" r="2.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="2.5" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="2.5" fill="currentColor" stroke="none"/></svg>Preferences</button>
     <button class="btn primary" id="exportBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>Export</button>
   </header>
 
@@ -103,8 +104,27 @@
       </div>
       <div class="dp-body" id="dpBody"></div>
       <div class="dp-footer">
+        <button class="btn" id="dpArchitect" style="display:none">✨ Architect proof</button>
         <button class="btn primary" id="dpEdit">Edit</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Proof Architect modal -->
+<div class="scrim" id="architectScrim">
+  <div class="architect-modal">
+    <div class="mh">
+      <h3>Proof Architecture</h3>
+      <span class="arch-target-badge" id="archTargetBadge"></span>
+      <button class="x" id="archClose">×</button>
+    </div>
+    <div class="arch-body" id="archBody"></div>
+    <div class="mf" id="archFooter" style="display:none">
+      <span class="muted" id="archHint"></span>
+      <button class="btn" id="archCancel">Cancel</button>
+      <button class="btn" id="archAcceptAll">Accept all</button>
+      <button class="btn primary" id="archApply">Apply to graph →</button>
     </div>
   </div>
 </div>
@@ -123,13 +143,107 @@
     <div class="mh">
       <h3 id="gsPreviewTitle">Knowledge Set</h3>
       <span class="gs-count-badge" id="gsPreviewCount"></span>
+      <button class="btn gs-rename-btn" id="gsRenameBtn" title="Rename set">✎ Rename</button>
+      <button class="btn" id="gsAddNodeBtn">+ Node</button>
       <button class="x" id="gsPreviewClose">×</button>
     </div>
     <div class="gs-node-list" id="gsPreviewList"></div>
+    <div class="gs-node-form" id="gsNodeForm" style="display:none">
+      <div class="gs-form-row">
+        <select id="gsNodeKind">
+          <option value="definition">Definition</option>
+          <option value="lemma">Lemma</option>
+          <option value="theorem">Theorem</option>
+          <option value="proposition">Proposition</option>
+          <option value="corollary">Corollary</option>
+          <option value="remark">Remark</option>
+        </select>
+        <input id="gsNodeTitle" type="text" placeholder="Title…">
+      </div>
+      <textarea id="gsNodeStmt" rows="2" placeholder="Statement (LaTeX supported)…"></textarea>
+      <div id="gsNodeProofWrap"><textarea id="gsNodeProof" rows="2" placeholder="Proof (optional)…"></textarea></div>
+      <div class="gs-form-actions">
+        <button class="btn" id="gsNodeCancelBtn">Cancel</button>
+        <button class="btn primary" id="gsNodeSaveBtn">Add node</button>
+      </div>
+    </div>
     <div class="mf">
       <span style="font-size:11.5px;color:var(--ink-faint);flex:1" id="gsPreviewHint"></span>
       <button class="btn" id="gsPreviewCancel">Cancel</button>
       <button class="btn primary" id="gsPreviewImport">Import into project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Preferences modal -->
+<div class="scrim" id="settingsScrim">
+  <div class="settings-modal">
+    <div class="mh">
+      <h3>Preferences</h3>
+      <button class="x" id="settingsClose">×</button>
+    </div>
+    <div class="stabs">
+      <button class="stab active" data-tab="profile">Profile</button>
+      <button class="stab" data-tab="appearance">Appearance</button>
+      <button class="stab" data-tab="ai">AI Integration</button>
+    </div>
+    <div class="stab-body">
+      <div class="stab-pane active" id="stab-profile">
+        <div class="efield">
+          <label>Display name</label>
+          <input id="prefName" type="text" placeholder="Your name">
+        </div>
+      </div>
+      <div class="stab-pane" id="stab-appearance">
+        <div class="pref-row">
+          <div class="pref-label">Theme</div>
+          <div class="theme-btns">
+            <button class="theme-btn" data-theme="light">☀ Light</button>
+            <button class="theme-btn" data-theme="dark">☾ Dark</button>
+          </div>
+        </div>
+        <div class="pref-row">
+          <div class="pref-label">Accent color</div>
+          <div class="accent-swatches" id="accentSwatches"></div>
+        </div>
+      </div>
+      <div class="stab-pane" id="stab-ai">
+        <p class="pref-note">API keys are stored locally on this device and never transmitted.</p>
+        <div class="efield">
+          <label>Anthropic API key</label>
+          <input id="prefAnthropicKey" type="password" placeholder="sk-ant-…" autocomplete="off">
+        </div>
+        <div class="efield">
+          <label>OpenAI API key</label>
+          <input id="prefOpenaiKey" type="password" placeholder="sk-…" autocomplete="off">
+        </div>
+        <div class="efield">
+          <label>Google Gemini API key</label>
+          <input id="prefGeminiKey" type="password" placeholder="AIza…" autocomplete="off">
+        </div>
+        <div class="efield">
+          <label>Default model</label>
+          <select id="prefModel">
+            <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="claude-opus-4-8">Claude Opus 4.8</option>
+            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+            <option value="gpt-4o">GPT-4o</option>
+            <option value="gpt-4o-mini">GPT-4o mini</option>
+            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+          </select>
+        </div>
+        <div class="efield">
+          <label>Custom API base URL <span class="label-note">— optional, for proxies</span></label>
+          <input id="prefBaseUrl" type="text" placeholder="https://api.anthropic.com">
+        </div>
+      </div>
+    </div>
+    <div class="mf">
+      <span class="muted">Settings are saved locally on this device.</span>
+      <button class="btn" id="settingsCancel">Cancel</button>
+      <button class="btn primary" id="settingsSave">Save</button>
     </div>
   </div>
 </div>
@@ -163,8 +277,15 @@
           <textarea id="eStmt" rows="4" placeholder="For every $x$, \|x\|_K = \sup_{y \in K^\circ} \langle x, y \rangle."></textarea>
         </div>
         <div class="efield" id="eProofWrap">
-          <label>Proof sketch <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint)">— LaTeX supported</span></label>
+          <label>Proof <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink-faint)">— LaTeX supported</span></label>
           <textarea id="eProof" rows="3" placeholder="Combine the radial–support duality…"></textarea>
+          <div class="proof-chat" id="eProofChat">
+            <div class="proof-chat-msgs" id="eProofChatMsgs"></div>
+            <div class="proof-chat-input-row">
+              <input id="eProofChatInput" type="text" placeholder="Ask AI about this proof…" autocomplete="off">
+              <button class="btn primary" id="eProofChatSend">↑</button>
+            </div>
+          </div>
         </div>
         <div class="efield">
           <label>Dependencies</label>
@@ -194,8 +315,17 @@
     <div class="emf">
       <button class="btn" id="eCancelBtn">Cancel</button>
       <button class="btn primary" id="eSaveBtn">Save block</button>
+      <button class="btn" id="eArchitectBtn" style="display:none" title="Decompose the proof into nodes">Architect proof</button>
       <button class="btn danger emf" id="eDeleteBtn" style="border-color:#E5C9C0;color:#B5503A;background:#F8EEEA;margin-left:auto">Delete block</button>
     </div>
+  </div>
+</div>
+
+<!-- ⌘K search palette -->
+<div class="scrim" id="searchScrim">
+  <div class="search-palette">
+    <input id="searchInput" type="text" placeholder="Search nodes…" autocomplete="off" spellcheck="false">
+    <div id="searchResults" class="search-results"></div>
   </div>
 </div>
 

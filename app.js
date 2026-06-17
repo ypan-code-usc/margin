@@ -22,6 +22,35 @@ const SAMPLE = {
 let globalSets=[]; // [{id,name,nodes:[]}]  — shared across projects
 let gsCounter=0;
 let gsPreviewId=null; // which global set is currently being previewed
+let gsEditingNodeIdx=null; // null=none, -1=adding new, n=editing index n
+
+/* ===================== preferences ===================== */
+const ACCENT_PRESETS=[
+  {name:'Terracotta',accent:'#C96442',soft:'#F4E9E2',ink:'#B0512F'},
+  {name:'Indigo',accent:'#5B6FBE',soft:'#EAECF6',ink:'#4558A8'},
+  {name:'Sage',accent:'#4E8A6F',soft:'#E5F0EA',ink:'#3A6E58'},
+  {name:'Plum',accent:'#7B5EA7',soft:'#EDE8F4',ink:'#6349A0'},
+  {name:'Slate',accent:'#3E6E8E',soft:'#E0EBF3',ink:'#2F5A78'},
+];
+let prefs={theme:'light',accentIdx:0,name:'',anthropicKey:'',openaiKey:'',geminiKey:'',model:'claude-sonnet-4-6',baseUrl:''};
+
+function loadPrefs(){
+  try{
+    const saved=localStorage.getItem('margin-prefs');
+    if(saved) prefs=Object.assign({},prefs,JSON.parse(saved));
+  }catch(e){}
+  applyPrefs();
+}
+function applyPrefs(){
+  document.documentElement.setAttribute('data-theme',prefs.theme||'light');
+  const a=ACCENT_PRESETS[prefs.accentIdx]||ACCENT_PRESETS[0];
+  document.documentElement.style.setProperty('--accent',a.accent);
+  document.documentElement.style.setProperty('--accent-soft',a.soft);
+  document.documentElement.style.setProperty('--accent-ink',a.ink);
+}
+function savePrefs(){
+  try{localStorage.setItem('margin-prefs',JSON.stringify(prefs));}catch(e){}
+}
 
 /* ===================== projects ===================== */
 let projects=[]; // [{id,name,data}]
@@ -66,13 +95,13 @@ function renderProjList(){
   const gSec=document.createElement('div');
   gSec.className='ps-section';
   const uploadIcon=`<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>`;
-  gSec.innerHTML=`Global Library<span class="ps-section-line"></span><button class="ps-section-add" id="gsUploadBtn" title="Upload knowledge set to library">${uploadIcon}</button>`;
+  gSec.innerHTML=`Global Library<span class="ps-section-line"></span><button class="ps-section-add" id="gsNewBtn" title="Create new knowledge set" style="font-size:14px">+</button><button class="ps-section-add" id="gsUploadBtn" title="Upload knowledge set to library">${uploadIcon}</button>`;
   list.appendChild(gSec);
 
   if(globalSets.length===0){
     const empty=document.createElement('div');
     empty.style.cssText='font-size:11px;color:var(--ink-faint);padding:4px 10px 8px;line-height:1.4';
-    empty.textContent='Upload blueprint JSONs to build a reusable library.';
+    empty.textContent='Create or upload blueprint JSONs to build a reusable library.';
     list.appendChild(empty);
   }
   globalSets.forEach(gs=>{
@@ -120,6 +149,9 @@ function renderProjList(){
   // wire upload button
   const gsBtn=document.getElementById('gsUploadBtn');
   if(gsBtn) gsBtn.onclick=e=>{e.stopPropagation();document.getElementById('gsFileInput').click();};
+  // wire new set button
+  const gsNewBtn=document.getElementById('gsNewBtn');
+  if(gsNewBtn) gsNewBtn.onclick=e=>{e.stopPropagation();createNewGlobalSet();};
 
   // divider between library and projects
   const div=document.createElement('div'); div.className='ps-divider'; list.appendChild(div);
@@ -154,8 +186,14 @@ let setCounter=0;
 const SET_COLORS=['#5B83B0','#B07A4E','#6B8E8A','#A0698E','#8C7BA6','#7A9457'];
 function setById(id){return (data.sets||[]).find(s=>s.id===id);}
 function setOfNode(nodeId){const n=byId(nodeId); return n&&n.setId?setById(n.setId):null;}
-function entityIdOfNode(nodeId){const n=byId(nodeId); return (n&&n.setId)?n.setId:nodeId;}
+function rootSets(){return (data.sets||[]).filter(s=>!s.parentSetId);}
+function childSets(sid){return (data.sets||[]).filter(s=>s.parentSetId===sid);}
+function rootSetOf(setId){let s=setById(setId);while(s&&s.parentSetId)s=setById(s.parentSetId);return s;}
+function entityIdOfNode(nodeId){const n=byId(nodeId);if(!n||!n.setId)return nodeId;const r=rootSetOf(n.setId);return r?r.id:n.setId;}
 function setMembers(s){return (s.nodeIds||[]).map(byId).filter(Boolean);}
+function allNodesInSet(sid){const s=setById(sid);if(!s)return[];return[...(s.nodeIds||[]).flatMap(id=>{const n=byId(id);return n?[n]:[]}),...childSets(sid).flatMap(cs=>allNodesInSet(cs.id))];}
+function allDescendantSetIds(sid){return[sid,...childSets(sid).flatMap(cs=>allDescendantSetIds(cs.id))];}
+function depthOf(sid){let d=0,s=setById(sid);while(s&&s.parentSetId){d++;s=setById(s.parentSetId);}return d;}
 
 /* ===================== derivation — simple proof-text based status ===================== */
 function depsOf(n){const s=[...(n.uses||[])];if(n.proof)s.push(...(n.proof.uses||[]));return s.map(byId).filter(Boolean);}
@@ -234,13 +272,23 @@ function tint(hex,amt=0.86){const c=(hex||'#888').replace('#','');const r=parseI
 const SET_PAD=16, SET_HDR=28, SET_COLLAPSED_H=46;
 function setCollapsedW(s){const t=(s.title||'Set');return Math.max(170,Math.min(260,t.length*7.4+76));}
 function layeredLayout(ids, depsFn, sizeFn, opt){
-  opt=opt||{}; const HGAP=opt.hgap??38, VGAP=opt.vgap??96, TOP=opt.top??40, SIDE=opt.side??30;
+  opt=opt||{}; const HGAP=opt.hgap??48, VGAP=opt.vgap??112, TOP=opt.top??40, SIDE=opt.side??30;
   const idset=new Set(ids), memo={};
   function layer(id,seen){ if(id in memo)return memo[id]; seen=seen||new Set(); if(seen.has(id))return 0; seen.add(id);
     const d=depsFn(id).filter(x=>idset.has(x)); const L=d.length?1+Math.max(...d.map(x=>layer(x,seen))):0; memo[id]=L; return L; }
   ids.forEach(id=>layer(id));
   const layers={}; ids.forEach(id=>{(layers[memo[id]]=layers[memo[id]]||[]).push(id);});
   const maxL=Math.max(0,...Object.keys(layers).map(Number));
+  // barycenter ordering: sort each layer so nodes are close to their deps in the previous layer
+  const xOrd={}; ids.forEach(id=>xOrd[id]=0);
+  for(let L=0;L<=maxL;L++){
+    const row=layers[L]||[];
+    row.forEach(id=>{const deps=depsFn(id).filter(x=>idset.has(x)&&memo[x]<L);
+      if(deps.length) xOrd[id]=deps.reduce((s,d)=>s+xOrd[d],0)/deps.length;});
+    row.sort((a,b)=>xOrd[a]-xOrd[b]);
+    row.forEach((id,i)=>xOrd[id]=i);
+    layers[L]=row;
+  }
   const layerH={}, layerW={};
   for(let L=0;L<=maxL;L++){const row=layers[L]||[];
     layerW[L]=row.reduce((a,id)=>a+sizeFn(id).w,0)+HGAP*Math.max(0,row.length-1);
@@ -253,35 +301,101 @@ function layeredLayout(ids, depsFn, sizeFn, opt){
   return {pos,W,H:Math.max(360,y-VGAP+TOP)};
 }
 function setInnerLayout(s){
-  const ids=(s.nodeIds||[]).filter(id=>byId(id));
-  const dep=id=>{const n=byId(id); if(!n)return[]; return [...(n.uses||[]),...(n.proof?.uses||[])].filter(r=>(s.nodeIds||[]).includes(r));};
-  return layeredLayout(ids, dep, id=>({w:boxW(byId(id)),h:BOX_H}), {top:SET_HDR+12,vgap:64,side:SET_PAD,hgap:30});
+  const children=childSets(s.id);
+  const directNodeIds=(s.nodeIds||[]).filter(id=>byId(id));
+  const allEntityIds=[...directNodeIds,...children.map(cs=>cs.id)];
+  const allSet=new Set(allEntityIds);
+
+  // build child set meta (size) recursively
+  const childMeta={};
+  children.forEach(cs=>{
+    if(cs.collapsed){childMeta[cs.id]={type:'set',w:setCollapsedW(cs),h:SET_COLLAPSED_H};}
+    else{const inner=setInnerLayout(cs);childMeta[cs.id]={type:'setopen',w:Math.max(180,inner.W),h:inner.H+SET_PAD,inner,childMeta:inner.childMeta};}
+  });
+
+  const size=id=>{const n=byId(id);if(n)return{w:boxW(n),h:BOX_H};const m=childMeta[id];return m?{w:m.w,h:m.h}:{w:120,h:BOX_H};};
+
+  const dep=id=>{
+    const n=byId(id);
+    if(n){
+      return[...(n.uses||[]),...(n.proof?.uses||[])].map(d=>{
+        if(allSet.has(d))return d;
+        const cs=children.find(c=>(c.nodeIds||[]).includes(d));
+        return cs?cs.id:null;
+      }).filter(d=>d&&d!==id&&allSet.has(d));
+    }
+    const cs=setById(id);if(!cs)return[];
+    const deps=new Set();
+    allNodesInSet(cs.id).forEach(mn=>{
+      [...(mn.uses||[]),...(mn.proof?.uses||[])].forEach(d=>{
+        if(allSet.has(d)&&d!==id)deps.add(d);
+        const pcs=children.find(c=>c.id!==id&&(c.nodeIds||[]).includes(d));
+        if(pcs)deps.add(pcs.id);
+      });
+    });
+    return[...deps];
+  };
+
+  const L=layeredLayout(allEntityIds,dep,size,{top:SET_HDR+12,vgap:80,side:SET_PAD,hgap:40});
+  return{...L,childMeta};
 }
 function layoutGraph(){
   const entities=[], entMeta={};
-  data.nodes.forEach(n=>{ if(!n.setId){ entities.push(n.id); entMeta[n.id]={type:'node',node:n,w:boxW(n),h:BOX_H}; }});
-  (data.sets||[]).forEach(s=>{ entities.push(s.id);
-    if(s.collapsed){ entMeta[s.id]={type:'set',set:s,w:setCollapsedW(s),h:SET_COLLAPSED_H}; }
-    else { const inner=setInnerLayout(s);
-      (s.nodeIds||[]).forEach(nid=>{ if(nodeManualPos[nid]) inner.pos[nid]={...inner.pos[nid],...nodeManualPos[nid]}; });
-      entMeta[s.id]={type:'setopen',set:s,w:Math.max(180,inner.W),h:inner.H+SET_PAD,inner}; }});
-  const entDeps=id=>{const meta=entMeta[id]; const nodes=meta.type==='node'?[meta.node]:setMembers(meta.set); const out=new Set();
-    nodes.forEach(n=>[...(n.uses||[]),...(n.proof?.uses||[])].forEach(r=>{const e=entityIdOfNode(r); if(e&&e!==id&&entMeta[e])out.add(e);})); return [...out];};
-  const L=layeredLayout(entities, entDeps, id=>({w:entMeta[id].w,h:entMeta[id].h}), {});
-  entities.forEach(id=>{ if(entityManualPos[id]) L.pos[id]={...L.pos[id],...entityManualPos[id]}; });
-  const nodePos={};
-  entities.forEach(id=>{const m=entMeta[id], ep=L.pos[id];
-    if(m.type==='node') nodePos[id]={x:ep.x,y:ep.y};
-    else if(m.type==='set') setMembers(m.set).forEach(n=>nodePos[n.id]={x:ep.x,y:ep.y});
-    else {const ox=ep.x-m.w/2, oy=ep.y-m.h/2; (m.set.nodeIds||[]).forEach(nid=>{const rp=m.inner.pos[nid]; if(rp)nodePos[nid]={x:ox+rp.x,y:oy+rp.y};});}});
-  return {entities,entMeta,entPos:L.pos,nodePos,W:L.W,H:L.H};
+  data.nodes.forEach(n=>{if(!n.setId){entities.push(n.id);entMeta[n.id]={type:'node',node:n,w:boxW(n),h:BOX_H};}});
+  rootSets().forEach(s=>{
+    entities.push(s.id);
+    if(s.collapsed){entMeta[s.id]={type:'set',set:s,w:setCollapsedW(s),h:SET_COLLAPSED_H};}
+    else{
+      const inner=setInnerLayout(s);
+      (s.nodeIds||[]).forEach(nid=>{if(nodeManualPos[nid])inner.pos[nid]={...inner.pos[nid],...nodeManualPos[nid]};});
+      entMeta[s.id]={type:'setopen',set:s,w:Math.max(180,inner.W),h:inner.H+SET_PAD,inner,childMeta:inner.childMeta};
+    }
+  });
+  const entDeps=id=>{
+    const meta=entMeta[id];
+    const nodes=meta.type==='node'?[meta.node]:allNodesInSet(id);
+    const out=new Set();
+    nodes.forEach(n=>[...(n.uses||[]),...(n.proof?.uses||[])].forEach(r=>{const e=entityIdOfNode(r);if(e&&e!==id&&entMeta[e])out.add(e);}));
+    return[...out];
+  };
+  const L=layeredLayout(entities,entDeps,id=>({w:entMeta[id].w,h:entMeta[id].h}),{});
+  entities.forEach(id=>{if(entityManualPos[id])L.pos[id]={...L.pos[id],...entityManualPos[id]};});
+
+  const nodePos={}, setAbsPos={};
+  function computePositions(sid, epAbs, meta){
+    const s=setById(sid);if(!s||!meta.inner)return;
+    const w=meta.w,h=meta.h,ox=epAbs.x-w/2,oy=epAbs.y-h/2;
+    setAbsPos[sid]=epAbs;
+    (s.nodeIds||[]).forEach(nid=>{const rp=meta.inner.pos[nid];if(rp)nodePos[nid]={x:ox+rp.x,y:oy+rp.y};});
+    const cm=meta.inner.childMeta||{};
+    childSets(sid).forEach(cs=>{
+      const csRel=meta.inner.pos[cs.id];if(!csRel)return;
+      const csMeta=cm[cs.id];if(!csMeta)return;
+      const csEp={x:ox+csRel.x,y:oy+csRel.y};
+      setAbsPos[cs.id]=csEp;
+      if(csMeta.type==='set'){allNodesInSet(cs.id).forEach(n=>nodePos[n.id]={x:csEp.x,y:csEp.y});}
+      else{computePositions(cs.id,csEp,csMeta);}
+    });
+  }
+  entities.forEach(id=>{
+    const m=entMeta[id],ep=L.pos[id];
+    if(m.type==='node')nodePos[id]={x:ep.x,y:ep.y};
+    else if(m.type==='set'){setAbsPos[id]=ep;allNodesInSet(id).forEach(n=>nodePos[n.id]={x:ep.x,y:ep.y});}
+    else computePositions(id,ep,m);
+  });
+  return{entities,entMeta,entPos:L.pos,nodePos,setAbsPos,W:L.W,H:L.H};
 }
 function computeEntityEdges(){
   const directed={}, internalOpen=[];
   data.nodes.forEach(c=>{
     [...new Set([...(c.uses||[]),...(c.proof?.uses||[])])].forEach(pid=>{const p=byId(pid); if(!p)return;
       const se=entityIdOfNode(pid), te=entityIdOfNode(c.id);
-      if(se===te){const s=setById(se); if(s&&!s.collapsed) internalOpen.push({from:pid,to:c.id}); return;}
+      if(se===te){
+        // internal edge — only include if the root set is open
+        const rs=setById(se);
+        if(rs&&!rs.collapsed) internalOpen.push({from:pid,to:c.id});
+        return;
+      }
       const key=se+'=>'+te; (directed[key]=directed[key]||{src:se,tgt:te,links:[]}).links.push({from:pid,to:c.id});});
   });
   const seen=new Set(), edges=[];
@@ -304,7 +418,7 @@ function renderNodeCard(n, p, opts){
   opts=opts||{};
   const isSel=n.id===selected, isDep=opts.selDeps&&opts.selDeps.includes(n.id);
   const col=kindColor(n); const w=boxW(n), h=BOX_H;
-  const isMSel=!opts.inset&&multiSel.has(n.id);
+  const isMSel=multiSel.has(n.id);
   const grp=mk('g',{class:'node'+(isSel?' sel':'')+(isDep?' dep':'')+(opts.inset?' inset':'')+(isMSel?' multi-sel':''),tabindex:'0',role:'button',
     'aria-label':n.title,id:`node-${n.id}`,transform:`translate(${p.x},${p.y})`});
   grp.appendChild(mk('rect',{class:'ring',x:-w/2-4,y:-h/2-4,width:w+8,height:h+8,rx:12}));
@@ -329,7 +443,7 @@ function renderNodeCard(n, p, opts){
 
 function renderGraph(){
   const g=$('#graph'); g.innerHTML='';
-  const lay=layoutGraph(); const {entities,entMeta,entPos,nodePos,W,H}=lay;
+  const lay=layoutGraph(); const {entities,entMeta,entPos,nodePos,setAbsPos,W,H}=lay;
 
   const defs=document.createElementNS(NS,'defs');
   const mkMarker=(id,color)=>{const m=mk('marker',{id,markerWidth:'7',markerHeight:'7',refX:'6',refY:'3.5',orient:'auto'});
@@ -346,32 +460,72 @@ function renderGraph(){
   const sel=byId(selected); const selDeps=sel?depsOf(sel).map(d=>d.id):[];
   const {edges,internalOpen}=computeEntityEdges();
 
-  // 1. expanded-set frames
-  entities.forEach(id=>{const m=entMeta[id]; if(m.type!=='setopen')return;
-    const ep=entPos[id]; const col=m.set.color||'#888'; const w=m.w,h=m.h;
-    const fg=mk('g',{class:'setframe',id:`setframe-${id}`,transform:`translate(${ep.x},${ep.y})`});
+  // 1. expanded-set frames (recursive helper)
+  function drawSetFrame(s, epAbs, m, parentGroup, parentEpAbs){
+    const col=s.color||'#888', w=m.w, h=m.h;
+    const tx=parentEpAbs?epAbs.x-parentEpAbs.x:epAbs.x;
+    const ty=parentEpAbs?epAbs.y-parentEpAbs.y:epAbs.y;
+    const fg=mk('g',{class:'setframe',id:`setframe-${s.id}`,transform:`translate(${tx},${ty})`});
     fg.appendChild(mk('rect',{class:'frame',x:-w/2,y:-h/2,width:w,height:h,rx:14,style:`fill:${col};stroke:${col}`}));
-    const hdr=mk('g',{class:'fhdr'}); hdr.dataset.setId=id;
+    const hdr=mk('g',{class:'fhdr'}); hdr.dataset.setId=s.id;
     hdr.appendChild(mk('rect',{class:'fhdr-bg',x:-w/2,y:-h/2,width:w-64,height:30,rx:14}));
-    const tt=mk('text',{class:'ftitle',x:-w/2+14,y:-h/2+18,style:`fill:${col}`}); tt.textContent='▴ '+(m.set.title||'Set')+'  ·  '+(m.set.nodeIds||[]).length;
+    const childCount=childSets(s.id).length;
+    const tt=mk('text',{class:'ftitle',x:-w/2+14,y:-h/2+18,style:`fill:${col}`});
+    tt.textContent='▴ '+(s.title||'Set')+'  ·  '+(s.nodeIds||[]).length+(childCount?' + '+childCount+' sets':'');
     hdr.appendChild(tt); fg.appendChild(hdr);
-    const expG=mk('g',{class:'fhdr-export',style:'pointer-events:auto;cursor:pointer'}); expG.dataset.setId=id;
-    expG.appendChild(mk('rect',{x:w/2-116,y:-h/2+4,width:52,height:22,rx:7,style:`fill:${col};opacity:.18`}));
-    const expT=mk('text',{x:w/2-90,y:-h/2+17,'text-anchor':'middle','dominant-baseline':'central',style:`fill:${col};font-size:10px;font-family:var(--font-ui);font-weight:600;pointer-events:none`});
-    expT.textContent='⬇ export'; expG.appendChild(expT); fg.appendChild(expG);
-    const delG=mk('g',{class:'fhdr-delete',style:'pointer-events:auto;cursor:pointer'}); delG.dataset.setId=id;
+    // "→ project" button (root sets only)
+    if(!s.parentSetId){
+      const expG=mk('g',{class:'fhdr-export',style:'pointer-events:auto;cursor:pointer'}); expG.dataset.setId=s.id;
+      expG.appendChild(mk('rect',{x:w/2-122,y:-h/2+4,width:58,height:22,rx:7,style:`fill:${col};opacity:.18`}));
+      const expT=mk('text',{x:w/2-93,y:-h/2+17,'text-anchor':'middle','dominant-baseline':'central',style:`fill:${col};font-size:10px;font-family:var(--font-ui);font-weight:600;pointer-events:none`});
+      expT.textContent='→ project'; expG.appendChild(expT); fg.appendChild(expG);
+    }
+    const delG=mk('g',{class:'fhdr-delete',style:'pointer-events:auto;cursor:pointer'}); delG.dataset.setId=s.id;
     delG.appendChild(mk('rect',{x:w/2-58,y:-h/2+4,width:52,height:22,rx:7,style:`fill:${col};opacity:.18`}));
     const delT=mk('text',{x:w/2-32,y:-h/2+17,'text-anchor':'middle','dominant-baseline':'central',style:`fill:${col};font-size:10px;font-family:var(--font-ui);font-weight:600;pointer-events:none`});
     delT.textContent='✕ delete'; delG.appendChild(delT); fg.appendChild(delG);
-    internalOpen.forEach(e=>{const nf=byId(e.from), nt=byId(e.to); if(!nf||nf.setId!==id||!nt||nt.setId!==id)return;
-      const a=nodePos[e.from], b=nodePos[e.to]; if(!a||!b)return;
-      const ra={x:a.x-ep.x,y:a.y-ep.y}, rb={x:b.x-ep.x,y:b.y-ep.y};
-      fg.appendChild(mk('path',{class:'edge','data-from':e.from,'data-to':e.to,d:edgePath(ra,rb),'marker-end':'url(#arrow)'}));});
-    (m.set.nodeIds||[]).forEach(nid=>{const n=byId(nid); const np=nodePos[nid]; if(!n||!np)return;
-      const rp={x:np.x-ep.x,y:np.y-ep.y};
+    // internal edges between any two nodes in this root set
+    const rootId=rootSetOf(s.id)?.id||s.id;
+    internalOpen.forEach(e=>{
+      if(entityIdOfNode(e.from)!==rootId||entityIdOfNode(e.to)!==rootId)return;
+      // only draw if both nodes belong to THIS set or its descendants
+      const descIds=new Set(allDescendantSetIds(s.id));
+      const nf=byId(e.from),nt=byId(e.to);
+      if(!nf||!nt||(!descIds.has(nf.setId)&&nf.setId!==s.id)||(!descIds.has(nt.setId)&&nt.setId!==s.id))return;
+      const a=nodePos[e.from],b=nodePos[e.to];if(!a||!b)return;
+      const ra={x:a.x-epAbs.x,y:a.y-epAbs.y},rb={x:b.x-epAbs.x,y:b.y-epAbs.y};
+      fg.appendChild(mk('path',{class:'edge','data-from':e.from,'data-to':e.to,d:edgePath(ra,rb),'marker-end':'url(#arrow)'}));
+    });
+    // nested child sets
+    const cm=m.inner?.childMeta||{};
+    childSets(s.id).forEach(cs=>{
+      const csAbsPos=setAbsPos[cs.id];if(!csAbsPos)return;
+      const csMeta=cm[cs.id];if(!csMeta)return;
+      if(csMeta.type==='setopen'){
+        drawSetFrame(cs,csAbsPos,csMeta,fg,epAbs);
+      } else {
+        // collapsed child set rendered inside parent frame
+        const col2=cs.color||'#888',w2=csMeta.w,h2=SET_COLLAPSED_H;
+        const rx=csAbsPos.x-epAbs.x,ry=csAbsPos.y-epAbs.y;
+        const cg=mk('g',{class:'nodeset'+(selected===cs.id?' sel':''),id:`set-${cs.id}`,transform:`translate(${rx},${ry})`});
+        cg.dataset.setId=cs.id;
+        const stack=mk('g',{class:'stack'});
+        stack.appendChild(mk('rect',{x:-w2/2+7,y:-h2/2-7,width:w2-14,height:h2,rx:9,style:`fill:${tint(col2)};stroke:${col2};opacity:.55`}));
+        stack.appendChild(mk('rect',{x:-w2/2+3.5,y:-h2/2-3.5,width:w2-7,height:h2,rx:9,style:`fill:${tint(col2)};stroke:${col2};opacity:.8`}));
+        stack.appendChild(mk('rect',{class:'ss-body',x:-w2/2,y:-h2/2,width:w2,height:h2,rx:9,style:`fill:#fff;stroke:${col2}`}));
+        cg.appendChild(stack);
+        const ct=mk('text',{class:'ss-count',x:-w2/2+36,y:0,style:`fill:${col2};font-size:10px`});ct.textContent=(cs.title||'Set')+' · '+( cs.nodeIds||[]).length+' nodes';cg.appendChild(ct);
+        fg.appendChild(cg);
+      }
+    });
+    // direct nodes of this set
+    (s.nodeIds||[]).forEach(nid=>{const n=byId(nid);const np=nodePos[nid];if(!n||!np)return;
+      const rp={x:np.x-epAbs.x,y:np.y-epAbs.y};
       fg.appendChild(renderNodeCard(n,rp,{selDeps,inset:true}));});
-    pan.appendChild(fg);
-  });
+    parentGroup.appendChild(fg);
+  }
+  entities.forEach(id=>{const m=entMeta[id];if(m.type!=='setopen')return;
+    const ep=entPos[id];drawSetFrame(m.set,ep,m,pan,null);});
 
   // 2. top-level edges
   edges.forEach(e=>{
@@ -401,9 +555,9 @@ function renderGraph(){
   data.nodes.forEach(n=>{ if(n.setId)return; const p=nodePos[n.id]; if(!p)return;
     pan.appendChild(renderNodeCard(n,p,{selDeps})); });
 
-  // 4. collapsed set blocks
-  (data.sets||[]).forEach(s=>{ if(!s.collapsed)return; const ep=entityManualPos[s.id]||entPos[s.id]; if(!ep)return;
-    const col=s.color||'#888', w=entMeta[s.id].w, h=SET_COLLAPSED_H;
+  // 4. collapsed set blocks (root sets only — child sets rendered inside parent frame)
+  (data.sets||[]).forEach(s=>{ if(!s.collapsed||s.parentSetId)return; const ep=entityManualPos[s.id]||entPos[s.id]; if(!ep)return;
+    const col=s.color||'#888', w=(entMeta[s.id]||{w:180}).w, h=SET_COLLAPSED_H;
     const grp=mk('g',{class:'nodeset'+(selected===s.id?' sel':''),id:`set-${s.id}`,transform:`translate(${ep.x},${ep.y})`}); grp.dataset.setId=s.id;
     grp.appendChild(mk('rect',{class:'ss-ring',x:-w/2-4,y:-h/2-4,width:w+8,height:h+8,rx:14}));
     const stack=mk('g',{class:'stack'});
@@ -442,7 +596,7 @@ function initGraphInteraction(svg, lay){
   }
 
   let panStart=null, nodeDrag=null, setDrag=null, insetDrag=null, didMove=false;
-  let aggClick=null, insetClick=null, fhdrClick=null;
+  let aggClick=null, insetClick=null;
   let lasso=null;
   let connectSrc=null, connectPreview=null;
   const canvas=svg.closest('.gcanvas');
@@ -468,11 +622,20 @@ function initGraphInteraction(svg, lay){
       $('#graph-pan')&&$('#graph-pan').appendChild(connectPreview);
       return;
     }
-    if(nodeGrp && selectMode && !nodeGrp.classList.contains('inset')){
+    if(nodeGrp && selectMode){
       e.preventDefault();
       const id=nodeGrp.dataset.id;
       if(multiSel.has(id)){ multiSel.delete(id); nodeGrp.classList.remove('multi-sel'); }
       else { multiSel.add(id); nodeGrp.classList.add('multi-sel'); }
+      updateGroupControls(); return;
+    }
+    // allow selecting a collapsed set in select mode
+    const collapsedSetGrp=e.target.closest('.nodeset');
+    if(collapsedSetGrp && selectMode){
+      e.preventDefault();
+      const id=collapsedSetGrp.dataset.setId;
+      if(multiSel.has(id)){ multiSel.delete(id); collapsedSetGrp.classList.remove('multi-sel'); }
+      else { multiSel.add(id); collapsedSetGrp.classList.add('multi-sel'); }
       updateGroupControls(); return;
     }
     const agg=e.target.closest('path.edge.agg');
@@ -499,13 +662,32 @@ function initGraphInteraction(svg, lay){
     const delBtn=e.target.closest('.fhdr-delete');
     if(delBtn){ e.preventDefault(); e.stopPropagation(); deleteSet(delBtn.dataset.setId); return; }
     const fhdr=e.target.closest('.fhdr');
-    if(fhdr){ e.preventDefault(); svg.setPointerCapture(e.pointerId); fhdrClick=fhdr.dataset.setId; didMove=false; return; }
-    const setGrp=e.target.closest('.nodeset'); const frame=e.target.closest('.setframe');
-    if(setGrp||frame){
+    if(fhdr){
+      // header: drag moves the set; click (no move) toggles it
       e.preventDefault(); svg.setPointerCapture(e.pointerId);
-      const id=setGrp?setGrp.dataset.setId:frame.id.replace('setframe-','');
-      const cur=center(id); setDrag={id,collapsed:!!setGrp,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false;
-      return;
+      const id=fhdr.dataset.setId; const cur=center(id);
+      setDrag={id,collapsed:false,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
+    }
+    const setGrp=e.target.closest('.nodeset'); const frame=e.target.closest('.setframe');
+    if(setGrp){
+      // collapsed set pill — drag to nest/move, click to toggle
+      e.preventDefault(); svg.setPointerCapture(e.pointerId);
+      const id=setGrp.dataset.setId; const cur=center(id);
+      setDrag={id,collapsed:true,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
+    }
+    if(frame){
+      e.preventDefault(); svg.setPointerCapture(e.pointerId);
+      const fid=frame.id.replace('setframe-','');
+      if(selectMode){
+        // select mode: lasso inside the set
+        const sc=svgCoords(svg,e.clientX,e.clientY);
+        const r=mk('rect',{class:'lasso',x:sc.x,y:sc.y,width:0,height:0});
+        $('#graph-pan').appendChild(r);
+        lasso={startSvg:sc,rect:r,insideSetId:fid}; return;
+      }
+      // normal mode: drag the expanded set (click-only toggles it)
+      const cur=center(fid);
+      setDrag={id:fid,collapsed:false,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
     }
     if(selectMode){
       e.preventDefault(); svg.setPointerCapture(e.pointerId);
@@ -563,7 +745,19 @@ function initGraphInteraction(svg, lay){
       entityManualPos[setDrag.id]={x:nx,y:ny};
       const el=svg.querySelector(`#set-${CSS.escape(setDrag.id)}`)||svg.querySelector(`#setframe-${CSS.escape(setDrag.id)}`);
       if(el)el.setAttribute('transform',`translate(${nx},${ny})`);
-      recalcEdges(setDrag.id); didMove=true; return;
+      recalcEdges(setDrag.id);
+      // only highlight drop targets when dragging a collapsed set
+      if(setDrag.collapsed){
+      svg.querySelectorAll('.setframe').forEach(f=>f.classList.remove('drop-target'));
+      const hit=document.elementFromPoint(e.clientX,e.clientY);
+      const targetFrame=hit&&hit.closest('.setframe');
+      if(targetFrame){
+        const tid=targetFrame.id.replace('setframe-','');
+        const descIds=new Set(allDescendantSetIds(setDrag.id));
+        if(tid&&tid!==setDrag.id&&!descIds.has(tid)) targetFrame.classList.add('drop-target');
+      }
+      } // end if(setDrag.collapsed)
+      didMove=true; return;
     }
     if(lasso){
       const sc=svgCoords(svg,e.clientX,e.clientY);
@@ -571,8 +765,12 @@ function initGraphInteraction(svg, lay){
       const w=Math.abs(sc.x-lasso.startSvg.x), h=Math.abs(sc.y-lasso.startSvg.y);
       lasso.rect.setAttribute('x',x); lasso.rect.setAttribute('y',y);
       lasso.rect.setAttribute('width',w); lasso.rect.setAttribute('height',h);
-      svg.querySelectorAll('#graph .node:not(.inset)').forEach(n=>{
-        const p=lay.nodePos[n.dataset.id]||center(n.dataset.id);
+      const lInsideId=lasso.insideSetId;
+      const lDescIds=lInsideId?new Set(allNodesInSet(lInsideId).map(n=>n.id)):null;
+      svg.querySelectorAll(lInsideId?'#graph .node.inset':'#graph .node:not(.inset)').forEach(n=>{
+        const id=n.dataset.id;
+        if(lDescIds&&!lDescIds.has(id))return;
+        const p=lay.nodePos[id]||center(id);
         const inside=p&&p.x>=x&&p.x<=x+w&&p.y>=y&&p.y<=y+h;
         n.classList.toggle('multi-sel',inside);
       }); return;
@@ -588,8 +786,12 @@ function initGraphInteraction(svg, lay){
       const r=lasso.rect;
       const lx=parseFloat(r.getAttribute('x')), ly=parseFloat(r.getAttribute('y'));
       const lw=parseFloat(r.getAttribute('width')), lh=parseFloat(r.getAttribute('height'));
-      svg.querySelectorAll('#graph .node:not(.inset)').forEach(n=>{
-        const id=n.dataset.id; const p=lay.nodePos[id];
+      const uInsideId=lasso.insideSetId;
+      const uDescIds=uInsideId?new Set(allNodesInSet(uInsideId).map(n=>n.id)):null;
+      svg.querySelectorAll('#graph .node').forEach(n=>{
+        const id=n.dataset.id;
+        if(uDescIds&&!uDescIds.has(id))return;
+        const p=lay.nodePos[id];
         if(p&&p.x>=lx&&p.x<=lx+lw&&p.y>=ly&&p.y<=ly+lh){
           multiSel.add(id); n.classList.add('multi-sel');
         }
@@ -603,7 +805,7 @@ function initGraphInteraction(svg, lay){
       const tgt=el&&el.closest('.node');
       if(tgt && tgt.dataset.id!==connectSrc.id){
         const child=byId(tgt.dataset.id);
-        if(child && !(child.uses||[]).includes(connectSrc.id)){
+        if(child && !(child.uses||[]).includes(connectSrc.id) && !wouldCycle(connectSrc.id,tgt.dataset.id)){
           child.uses=[...(child.uses||[]),connectSrc.id]; derive(); renderAll();
           toast(`Linked: ${byId(connectSrc.id)?.title.split('(')[0].trim()} → ${child.title.split('(')[0].trim()}`);
         } else if(child) toast('Already linked.');
@@ -611,16 +813,40 @@ function initGraphInteraction(svg, lay){
       connectSrc=null; return;
     }
     if(aggClick){ if(!didMove) openRelations(aggClick); aggClick=null; return; }
-    if(fhdrClick){ if(!didMove) toggleSet(fhdrClick); fhdrClick=null; return; }
     if(insetDrag){ if(!didMove) select(insetDrag.id); else renderAll(); insetDrag=null; insetClick=null; didMove=false; return; }
-    if(setDrag){ if(!didMove) toggleSet(setDrag.id); else renderAll(); setDrag=null; didMove=false; canvas&&canvas.classList.remove('panning'); return; }
+    if(setDrag){
+      svg.querySelectorAll('.setframe').forEach(f=>f.classList.remove('drop-target'));
+      if(!didMove){ toggleSet(setDrag.id); }
+      else {
+        // check if dropped onto a valid set frame → nest inside it
+        const hit=document.elementFromPoint(e.clientX,e.clientY);
+        const targetFrame=hit&&hit.closest('.setframe');
+        const tid=targetFrame?targetFrame.id.replace('setframe-',''):null;
+        const descIds=new Set(allDescendantSetIds(setDrag.id));
+        if(setDrag.collapsed&&tid&&tid!==setDrag.id&&!descIds.has(tid)){
+          const dragged=setById(setDrag.id);
+          if(dragged){
+            dragged.parentSetId=tid;
+            delete entityManualPos[setDrag.id];
+            renderAll();
+            toast(`"${dragged.title||'Set'}" nested inside "${setById(tid)?.title||'set'}".`);
+          }
+        } else if(!tid&&setDrag.collapsed){
+          // dragged outside all frames → un-nest (make root)
+          const dragged=setById(setDrag.id);
+          if(dragged&&dragged.parentSetId){ dragged.parentSetId=null; renderAll(); toast(`"${dragged.title||'Set'}" moved to top level.`); }
+          else renderAll();
+        } else { renderAll(); }
+      }
+      setDrag=null; didMove=false; canvas&&canvas.classList.remove('panning'); return;
+    }
     if(nodeDrag){ if(!didMove) select(nodeDrag.id); else renderAll(); nodeDrag=null; didMove=false; canvas&&canvas.classList.remove('panning'); return; }
     panStart=null; canvas&&canvas.classList.remove('panning');
   };
   svg.onpointercancel=()=>{
     if(lasso){lasso.rect.remove();lasso=null;}
     connectPreview&&connectPreview.remove(); connectPreview=null;
-    connectSrc=null; nodeDrag=null; setDrag=null; insetDrag=null; panStart=null; aggClick=null; insetClick=null; fhdrClick=null;
+    connectSrc=null; nodeDrag=null; setDrag=null; insetDrag=null; panStart=null; aggClick=null; insetClick=null;
     canvas&&canvas.classList.remove('panning');
   };
 }
@@ -629,17 +855,20 @@ function initGraphInteraction(svg, lay){
 function deleteSet(id){
   const s=setById(id); if(!s)return;
   const title=s.title||'Set';
-  const memberIds=new Set(s.nodeIds||[]);
+  // collect all descendant set IDs and their node IDs
+  const descSetIds=new Set(allDescendantSetIds(id));
+  const memberIds=new Set();
+  descSetIds.forEach(sid=>{ (setById(sid)?.nodeIds||[]).forEach(nid=>memberIds.add(nid)); });
   data.nodes=data.nodes.filter(n=>!memberIds.has(n.id));
   data.nodes.forEach(n=>{
     n.uses=(n.uses||[]).filter(u=>!memberIds.has(u));
     if(n.proof) n.proof.uses=(n.proof.uses||[]).filter(u=>!memberIds.has(u));
   });
-  data.sets=data.sets.filter(s=>s.id!==id);
-  delete entityManualPos[id];
-  if(selected===id) selected=null;
+  data.sets=data.sets.filter(s=>!descSetIds.has(s.id));
+  descSetIds.forEach(sid=>delete entityManualPos[sid]);
+  if(descSetIds.has(selected)) selected=null;
   closeRelations(); renderAll();
-  toast(`Deleted knowledge set "${title}".`);
+  toast(`Deleted "${title}" and all nested sets.`);
 }
 function toggleSet(id){
   const s=setById(id); if(!s)return;
@@ -687,7 +916,7 @@ function renderDetailPanel(){
     let expBtn=$('#dpExportSet');
     if(!expBtn){
       expBtn=document.createElement('button'); expBtn.id='dpExportSet'; expBtn.className='btn';
-      expBtn.textContent='Export set'; $('#dpEdit').parentNode.appendChild(expBtn);
+      expBtn.textContent='→ Save to project'; $('#dpEdit').parentNode.appendChild(expBtn);
     }
     expBtn.style.display=''; expBtn.onclick=()=>exportSet(selected);
     return;
@@ -718,7 +947,7 @@ function renderDetailPanel(){
   }
 
   if(!isDef(n) && n.proof?.text){
-    html+=`<div class="dp-section"><div class="dp-sec-label">Proof sketch</div><div class="dp-proof" id="dpProof">${n.proof.text}</div></div>`;
+    html+=`<div class="dp-section"><div class="dp-sec-label">Proof</div><div class="dp-proof" id="dpProof">${n.proof.text}</div></div>`;
   }
 
   if(allDeps.length){
@@ -734,7 +963,7 @@ function renderDetailPanel(){
   // status note
   let note='';
   if(isDef(n)) note='A definition — always counts as done.';
-  else if(n._proved) note='All dependencies proved and proof sketch written.';
+  else if(n._proved) note='All dependencies proved and proof written.';
   else if(n._ready) note='Dependencies are proved — ready to write the proof.';
   else note='Waiting: some dependencies aren\'t proved yet.';
   html+=`<div class="dp-note">${note}</div>`;
@@ -748,6 +977,33 @@ function renderDetailPanel(){
   }
 
   $('#dpEdit').onclick=()=>openEditModal(selected);
+  const archBtn=$('#dpArchitect');
+  if(archBtn){ archBtn.style.display=isDef(n)?'none':''; archBtn.onclick=()=>openArchitect(selected); }
+}
+
+/* ===================== autosave ===================== */
+function saveAll(){
+  try{
+    if(activeProjectId) projectData[activeProjectId]=clone(data);
+    localStorage.setItem('margin-autosave',JSON.stringify(
+      {projects,projectData,activeProjectId,projCounter,setCounter,entityManualPos,nodeManualPos}));
+  }catch(e){}
+}
+function loadAll(){
+  try{
+    const raw=localStorage.getItem('margin-autosave'); if(!raw)return false;
+    const s=JSON.parse(raw);
+    projects.length=0; s.projects.forEach(p=>projects.push(p));
+    Object.keys(projectData).forEach(k=>delete projectData[k]);
+    Object.assign(projectData,s.projectData);
+    projCounter=s.projCounter||1; setCounter=s.setCounter||0;
+    Object.assign(entityManualPos,s.entityManualPos||{});
+    Object.assign(nodeManualPos,s.nodeManualPos||{});
+    activeProjectId=s.activeProjectId;
+    data=projectData[activeProjectId];
+    if(!data.sets)data.sets=[];
+    return true;
+  }catch(e){return false;}
 }
 
 /* ===================== renderAll ===================== */
@@ -755,6 +1011,7 @@ function renderAll(){
   derive(); renderGraph(); renderDetailPanel(); renderLegend(); updateProgress();
   $('#docName').innerHTML='project · <b>'+data.project.title+'</b>';
   renderProjList();
+  saveAll();
 }
 
 /* detail panel close */
@@ -764,61 +1021,129 @@ $('#rpClose').onclick=closeRelations;
 /* ===================== behaviour ===================== */
 function select(id,scroll){selected=id;renderAll();}
 
-/* export a single set as a standalone blueprint.json */
-function buildSetBlob(sid){
-  const s=setById(sid); if(!s)return null;
-  const members=setMembers(s);
-  const idMap={};
-  members.forEach(n=>{ idMap[n.id]=n.id.replace(sid+':',''); });
-  const nodes=members.map(n=>{
-    const nn=clone(n); nn.id=idMap[n.id]||n.id; delete nn.setId;
-    nn.uses=(n.uses||[]).map(u=>idMap[u]||u);
-    if(nn.proof) nn.proof.uses=(n.proof?.uses||[]).map(u=>idMap[u]||u);
-    ['_proved','_ready'].forEach(k=>delete nn[k]);
-    return nn;
-  });
-  const out={project:{title:s.title},nodes};
-  return {blob:new Blob([JSON.stringify(out,null,2)],{type:'application/json'}),
-          filename:(s.title||'set').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.blueprint.json',
-          nodes};
-}
-async function exportSet(sid){
-  const s=setById(sid); if(!s)return;
-  const {blob,filename,nodes}=buildSetBlob(sid)||{};
-  if(!blob)return;
-  if(window.showDirectoryPicker){
-    try{
-      const dir=await window.showDirectoryPicker({mode:'readwrite',startIn:'documents'});
-      const fh=await dir.getFileHandle(filename,{create:true});
-      const writable=await fh.createWritable();
-      await writable.write(blob); await writable.close();
-      toast(`Saved "${filename}" to folder (${nodes.length} nodes).`);
-      return;
-    }catch(err){
-      if(err.name==='AbortError')return;
-    }
+/* save a knowledge set as a new project (including all transitive deps) */
+function collectTransitiveDeps(seedIds){
+  const visited=new Set(seedIds);
+  const queue=[...seedIds];
+  while(queue.length){
+    const id=queue.shift();
+    const n=byId(id); if(!n)continue;
+    [...(n.uses||[]),...(n.proof?.uses||[])].forEach(dep=>{
+      if(!visited.has(dep)){visited.add(dep);queue.push(dep);}
+    });
   }
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download=filename; a.click(); URL.revokeObjectURL(a.href);
-  toast(`Exported "${s.title}" (${nodes.length} nodes).`);
+  return[...visited];
 }
+function saveSetToProject(sid){
+  const s=setById(sid); if(!s)return;
+  // collect all nodes in this set (including nested child sets)
+  const setNodeIds=allNodesInSet(sid).map(n=>n.id);
+  const setNodeIdSet=new Set(setNodeIds);
+  // transitively collect all dependency nodes
+  const allIds=collectTransitiveDeps(setNodeIds);
+  const depOnlyIds=allIds.filter(id=>!setNodeIdSet.has(id));
+
+  // clone nodes for new project
+  const newNodes=allIds.map(id=>{
+    const n=byId(id); if(!n)return null;
+    const nn=clone(n);
+    ['_proved','_ready'].forEach(k=>delete nn[k]);
+    if(!setNodeIdSet.has(id)) delete nn.setId; // dep nodes are free
+    return nn;
+  }).filter(Boolean);
+
+  // reconstruct nested sets for the new project
+  const descSetIds=allDescendantSetIds(sid);
+  const newSets=descSetIds.map(dsid=>{
+    const ds=setById(dsid); if(!ds)return null;
+    const ns=clone(ds);
+    ['_proved','_ready'].forEach(k=>delete ns[k]);
+    // adjust parentSetId: root of the cloned tree has no parent
+    if(ns.id===sid)ns.parentSetId=null;
+    return ns;
+  }).filter(Boolean);
+
+  const d={project:{title:s.title},nodes:newNodes,sets:newSets};
+  const pid=newProject(s.title,d);
+  switchProject(pid);
+  toast(`"${s.title}" saved as new project — ${setNodeIds.length} set nodes + ${depOnlyIds.length} dependencies.`);
+}
+// keep exportSet as alias used by the detail panel button
+function exportSet(sid){saveSetToProject(sid);}
 
 /* ── Global knowledge set preview & import ─────────────────────────────── */
+function createNewGlobalSet(){
+  gsCounter++;
+  const gs={id:'gs'+gsCounter,name:'New knowledge set',nodes:[]};
+  globalSets.push(gs);
+  renderProjList();
+  openGsPreview(gs.id);
+  toast('New knowledge set created — add nodes to it.');
+}
+
 function openGsPreview(gsid){
   const gs=globalSets.find(g=>g.id===gsid); if(!gs)return;
   gsPreviewId=gsid;
+  gsEditingNodeIdx=null;
   $('#gsPreviewTitle').textContent=gs.name;
-  $('#gsPreviewCount').textContent=gs.nodes.length+' nodes';
   $('#gsPreviewHint').textContent='Will be imported into: '+( projects.find(p=>p.id===activeProjectId)?.name||'current project');
-  const listEl=$('#gsPreviewList');
-  listEl.innerHTML=gs.nodes.map(n=>`
-    <div class="gs-node-row">
-      <span class="gn-kind">${n.kind||'node'}</span>
-      <span class="gn-title">${n.title||n.id}</span>
-    </div>`).join('');
+  renderGsPreview();
+  $('#gsNodeForm').style.display='none';
   $('#gsPreviewScrim').classList.add('open');
 }
-function closeGsPreview(){$('#gsPreviewScrim').classList.remove('open');gsPreviewId=null;}
+
+function renderGsPreview(){
+  const gs=globalSets.find(g=>g.id===gsPreviewId); if(!gs)return;
+  $('#gsPreviewCount').textContent=gs.nodes.length+' nodes';
+  const listEl=$('#gsPreviewList');
+  listEl.innerHTML=gs.nodes.map((n,i)=>`
+    <div class="gs-node-row" data-idx="${i}">
+      <span class="gn-kind">${n.kind||'node'}</span>
+      <span class="gn-title">${n.title||n.id}</span>
+      <button class="gn-edit" data-idx="${i}" title="Edit">✎</button>
+      <button class="gn-del" data-idx="${i}" title="Remove">×</button>
+    </div>`).join('');
+  listEl.querySelectorAll('.gn-edit').forEach(b=>b.onclick=e=>{e.stopPropagation();renderGsNodeForm(+b.dataset.idx);});
+  listEl.querySelectorAll('.gn-del').forEach(b=>b.onclick=e=>{e.stopPropagation();
+    const g=globalSets.find(g=>g.id===gsPreviewId); if(!g)return;
+    g.nodes.splice(+b.dataset.idx,1); renderGsPreview(); renderProjList();});
+}
+
+function renderGsNodeForm(idx){
+  gsEditingNodeIdx=idx;
+  const gs=globalSets.find(g=>g.id===gsPreviewId);
+  const n=idx===-1?null:gs?.nodes[idx];
+  $('#gsNodeKind').value=n?.kind||'definition';
+  $('#gsNodeTitle').value=n?.title||'';
+  $('#gsNodeStmt').value=n?.statement||'';
+  $('#gsNodeProof').value=n?.proof?.text||'';
+  const isdef=(n?.kind||'definition')==='definition';
+  $('#gsNodeProofWrap').style.display=isdef?'none':'';
+  $('#gsNodeSaveBtn').textContent=idx===-1?'Add node':'Save node';
+  $('#gsNodeForm').style.display='';
+}
+
+function saveGsNode(){
+  const gs=globalSets.find(g=>g.id===gsPreviewId); if(!gs)return;
+  const kind=$('#gsNodeKind').value;
+  const title=$('#gsNodeTitle').value.trim();
+  if(!title){toast('Title is required.');return;}
+  const isdef=kind==='definition';
+  const node={
+    id:gsPreviewId+':'+Date.now(),kind,title,
+    statement:$('#gsNodeStmt').value,
+    uses:[],
+    proof:isdef?null:{uses:[],text:$('#gsNodeProof').value}
+  };
+  if(gsEditingNodeIdx===-1){ gs.nodes.push(node); }
+  else { Object.assign(gs.nodes[gsEditingNodeIdx],node); }
+  gsEditingNodeIdx=null;
+  $('#gsNodeForm').style.display='none';
+  renderGsPreview(); renderProjList();
+  toast(gsEditingNodeIdx===-1?'Node added.':'Node saved.');
+}
+
+function closeGsPreview(){$('#gsPreviewScrim').classList.remove('open');gsPreviewId=null;gsEditingNodeIdx=null;}
 function importGlobalSet(gsid, dropPos){
   const gs=globalSets.find(g=>g.id===gsid); if(!gs)return;
   setCounter++;
@@ -843,6 +1168,73 @@ $('#gsPreviewClose').onclick=closeGsPreview;
 $('#gsPreviewCancel').onclick=closeGsPreview;
 $('#gsPreviewScrim').onclick=e=>{if(e.target===$('#gsPreviewScrim'))closeGsPreview();};
 $('#gsPreviewImport').onclick=()=>{if(gsPreviewId){importGlobalSet(gsPreviewId);closeGsPreview();}};
+$('#gsAddNodeBtn').onclick=()=>renderGsNodeForm(-1);
+$('#gsNodeKind').addEventListener('change',()=>{
+  const isdef=$('#gsNodeKind').value==='definition';
+  $('#gsNodeProofWrap').style.display=isdef?'none':'';
+});
+$('#gsNodeCancelBtn').onclick=()=>{$('#gsNodeForm').style.display='none';gsEditingNodeIdx=null;};
+$('#gsNodeSaveBtn').onclick=saveGsNode;
+$('#gsRenameBtn').onclick=()=>{
+  const gs=globalSets.find(g=>g.id===gsPreviewId); if(!gs)return;
+  const name=prompt('Rename knowledge set:',gs.name); if(!name)return;
+  gs.name=name.trim();
+  $('#gsPreviewTitle').textContent=gs.name;
+  renderProjList(); toast('Renamed.');
+};
+
+/* ── Settings modal ─────────────────────────────────────────────────────── */
+function openSettings(){
+  // populate form from prefs
+  $('#prefName').value=prefs.name||'';
+  $('#prefAnthropicKey').value=prefs.anthropicKey||'';
+  $('#prefOpenaiKey').value=prefs.openaiKey||'';
+  $('#prefGeminiKey').value=prefs.geminiKey||'';
+  $('#prefModel').value=prefs.model||'claude-sonnet-4-6';
+  $('#prefBaseUrl').value=prefs.baseUrl||'';
+  // theme buttons
+  document.querySelectorAll('.theme-btn').forEach(b=>b.classList.toggle('active',b.dataset.theme===(prefs.theme||'light')));
+  // accent swatches
+  const sw=$('#accentSwatches');
+  sw.innerHTML=ACCENT_PRESETS.map((a,i)=>`<span class="accent-swatch${i===(prefs.accentIdx||0)?' active':''}" data-idx="${i}" style="background:${a.accent}" title="${a.name}"></span>`).join('');
+  sw.querySelectorAll('.accent-swatch').forEach(s=>s.onclick=()=>{
+    prefs.accentIdx=+s.dataset.idx;
+    sw.querySelectorAll('.accent-swatch').forEach(x=>x.classList.toggle('active',x===s));
+    applyPrefs();
+  });
+  // tabs
+  document.querySelectorAll('.stab').forEach(t=>t.onclick=()=>{
+    document.querySelectorAll('.stab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.stab-pane').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('stab-'+t.dataset.tab).classList.add('active');
+  });
+  // activate first tab
+  document.querySelectorAll('.stab').forEach((t,i)=>{t.classList.toggle('active',i===0);});
+  document.querySelectorAll('.stab-pane').forEach((p,i)=>{p.classList.toggle('active',i===0);});
+  $('#settingsScrim').classList.add('open');
+}
+function closeSettings(){$('#settingsScrim').classList.remove('open');}
+function saveSettings(){
+  prefs.name=$('#prefName').value.trim();
+  prefs.anthropicKey=$('#prefAnthropicKey').value;
+  prefs.openaiKey=$('#prefOpenaiKey').value;
+  prefs.geminiKey=$('#prefGeminiKey').value;
+  prefs.model=$('#prefModel').value;
+  prefs.baseUrl=$('#prefBaseUrl').value.trim();
+  savePrefs(); applyPrefs(); closeSettings();
+  toast('Preferences saved.');
+}
+$('#settingsBtn').onclick=openSettings;
+$('#settingsClose').onclick=closeSettings;
+$('#settingsCancel').onclick=closeSettings;
+$('#settingsSave').onclick=saveSettings;
+$('#settingsScrim').onclick=e=>{if(e.target===$('#settingsScrim'))closeSettings();};
+document.querySelectorAll('.theme-btn').forEach(b=>b.onclick=()=>{
+  prefs.theme=b.dataset.theme;
+  document.querySelectorAll('.theme-btn').forEach(x=>x.classList.toggle('active',x===b));
+  applyPrefs();
+});
 
 /* connect mode */
 let connectMode=false;
@@ -893,7 +1285,9 @@ function updateGroupControls(){
   const ctrls=$('#groupControls');
   if(selectMode && multiSel.size>=2){
     ctrls.style.display='flex';
-    $('#groupCount').textContent=multiSel.size;
+    const nSets=[...multiSel].filter(id=>setById(id)).length;
+    const nNodes=multiSel.size-nSets;
+    $('#groupCount').textContent=nNodes+(nSets?` + ${nSets} set${nSets>1?'s':''}`:'')
   } else {
     ctrls.style.display='none';
   }
@@ -904,14 +1298,28 @@ function doGroup(){
   setCounter++;
   const sid='set'+setCounter;
   const color=SET_COLORS[(setCounter-1)%SET_COLORS.length];
-  const nodeIds=[...multiSel];
-  nodeIds.forEach(id=>{const n=byId(id); if(n) n.setId=sid;});
+  const selectedSetIds=[...multiSel].filter(id=>setById(id));
+  const selectedNodeIds=[...multiSel].filter(id=>byId(id));
+  const selNodeSet=new Set(selectedNodeIds);
+
+  // detect common parent: all selected nodes share the same immediate setId
+  const parentSetIds=new Set(selectedNodeIds.map(id=>{const n=byId(id);return n?.setId||null;}).filter(Boolean));
+  const allInSameSet=parentSetIds.size===1&&selectedNodeIds.every(id=>{const n=byId(id);return n&&n.setId;});
+  const commonParentSetId=allInSameSet?[...parentSetIds][0]:null;
+
+  // remove selected node IDs from any former parent set's nodeIds
+  (data.sets||[]).forEach(s=>{s.nodeIds=(s.nodeIds||[]).filter(id=>!selNodeSet.has(id));});
+
+  // assign new setId to nodes and parentSetId to nested sets
+  selectedNodeIds.forEach(id=>{const n=byId(id);if(n)n.setId=sid;});
+  selectedSetIds.forEach(id=>{const s=setById(id);if(s)s.parentSetId=sid;});
+
   data.sets=data.sets||[];
-  data.sets.push({id:sid,title:name,color,collapsed:false,nodeIds});
+  data.sets.push({id:sid,title:name,color,collapsed:false,nodeIds:selectedNodeIds,parentSetId:commonParentSetId||null});
   $('#groupName').value='';
   setSelectMode(false);
   renderAll();
-  toast(`"${name}" set created with ${nodeIds.length} nodes.`);
+  toast(`"${name}" set created with ${selectedNodeIds.length} node${selectedNodeIds.length!==1?'s':''}${selectedSetIds.length?` and ${selectedSetIds.length} nested set${selectedSetIds.length!==1?'s':''}`:''}.`);
 }
 $('#selectBtn').onclick=()=>setSelectMode(!selectMode);
 $('#groupCancel').onclick=()=>setSelectMode(false);
@@ -1032,8 +1440,13 @@ function openEditModal(id){
   $('#eTitle').value=n.title||'';
   $('#eStmt').value=n.statement||'';
   const proofWrap=$('#eProofWrap');
-  if(isDef(n)){ proofWrap.style.display='none'; $('#eProof').value=''; }
+  const isDefinition=isDef(n);
+  if(isDefinition){ proofWrap.style.display='none'; $('#eProof').value=''; }
   else { proofWrap.style.display=''; $('#eProof').value=(n.proof?.text)||''; }
+  // show Architect button only for non-definitions
+  const eArchBtn=$('#eArchitectBtn');
+  if(eArchBtn) eArchBtn.style.display=isDefinition?'none':'';
+  initProofChat(n);
   renderDepTags(n.uses||[]);
   refreshPreview();
   $('#editScrim').classList.add('open');
@@ -1065,7 +1478,21 @@ function renderDepTags(ids){
   });
 }
 
+function wouldCycle(from, to){
+  // returns true if adding "from uses to" would create a cycle
+  const visited=new Set(); const stack=[from];
+  while(stack.length){ const id=stack.pop(); if(id===to)return true;
+    if(visited.has(id))continue; visited.add(id);
+    const n=byId(id); if(!n)continue;
+    [...(n.uses||[]),...(n.proof?.uses||[])].forEach(d=>stack.push(d)); }
+  return false;
+}
+
 function addDep(id){
+  if(editingId&&wouldCycle(id,editingId)){
+    toast('Cannot add — this would create a circular dependency.');
+    $('#eDepInput').value=''; $('#eDepDrop').classList.remove('open'); return;
+  }
   if(!editDeps.includes(id)){ editDeps.push(id); renderDepTags(editDeps); }
   $('#eDepInput').value=''; $('#eDepDrop').classList.remove('open');
 }
@@ -1140,6 +1567,18 @@ $('#eSaveBtn').onclick=()=>{
 };
 $('#eCancelBtn').onclick=closeEditModal;
 $('#eCancelX').onclick=closeEditModal;
+$('#eArchitectBtn').onclick=()=>{
+  if(!editingId)return;
+  // use the unsaved proof text currently in the textarea
+  const liveProofText=$('#eProof').value.trim();
+  if(!liveProofText){toast('Write a proof first, then use Architect to decompose it.');return;}
+  closeEditModal();
+  // temporarily override proof text for architect to read
+  const n=byId(editingId); const prev=n.proof?.text;
+  if(n.proof) n.proof.text=liveProofText;
+  openArchitect(editingId);
+  if(n.proof) n.proof.text=prev; // restore (architect already captured it)
+};
 $('#editScrim').addEventListener('click',e=>{if(e.target===$('#editScrim'))closeEditModal();});
 $('#eDeleteBtn').onclick=()=>{
   if(!editingId||!confirm('Delete this block?'))return;
@@ -1232,7 +1671,365 @@ function syncProjName(){
   });
 })();
 
+/* ===================== AI integration ===================== */
+
+async function callAI(messages, onChunk){
+  const isAnthropic=prefs.model.startsWith('claude');
+  const isGemini=prefs.model.startsWith('gemini');
+  const key=isAnthropic?prefs.anthropicKey:isGemini?prefs.geminiKey:prefs.openaiKey;
+  if(!key) throw new Error('No API key configured. Add one in Preferences → AI Integration.');
+
+  let resp, full='';
+
+  if(isGemini){
+    const sys=messages.find(m=>m.role==='system');
+    const contents=messages.filter(m=>m.role!=='system').map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
+    const body={contents,generationConfig:{maxOutputTokens:4096}};
+    if(sys?.content) body.systemInstruction={parts:[{text:sys.content}]};
+    resp=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${prefs.model}:streamGenerateContent?key=${key}&alt=sse`,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error?.message||`Gemini API error ${resp.status}`);}
+    const reader=resp.body.getReader(), dec=new TextDecoder();
+    let buf='';
+    while(true){
+      const {done,value}=await reader.read(); if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n'); buf=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;
+        try{
+          const ev=JSON.parse(line.slice(6));
+          const text=ev.candidates?.[0]?.content?.parts?.[0]?.text||'';
+          if(text){full+=text; onChunk&&onChunk(full);}
+        }catch{}
+      }
+    }
+    return full;
+  }
+
+  const base=(prefs.baseUrl||'').replace(/\/$/,'')||(isAnthropic?'https://api.anthropic.com':'https://api.openai.com');
+  if(isAnthropic){
+    const sys=messages.find(m=>m.role==='system');
+    const userMsgs=messages.filter(m=>m.role!=='system');
+    resp=await fetch(`${base}/v1/messages`,{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-calls':'true'},
+      body:JSON.stringify({model:prefs.model,max_tokens:4096,system:sys?.content||'',messages:userMsgs,stream:true})});
+  } else {
+    resp=await fetch(`${base}/v1/chat/completions`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+      body:JSON.stringify({model:prefs.model,messages,stream:true,max_tokens:4096})});
+  }
+  if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error?.message||`API error ${resp.status}`);}
+
+  const reader=resp.body.getReader(), dec=new TextDecoder();
+  let buf='';
+  while(true){
+    const {done,value}=await reader.read(); if(done)break;
+    buf+=dec.decode(value,{stream:true});
+    const lines=buf.split('\n'); buf=lines.pop();
+    for(const line of lines){
+      if(!line.startsWith('data: '))continue;
+      const d=line.slice(6); if(d==='[DONE]')continue;
+      try{
+        const ev=JSON.parse(d);
+        const text=isAnthropic?(ev.delta?.text||''):(ev.choices?.[0]?.delta?.content||'');
+        if(text){full+=text; onChunk&&onChunk(full);}
+      }catch{}
+    }
+  }
+  return full;
+}
+
+/* ── Proof chat ──────────────────────────────────────────────────────── */
+let proofChatHistory=[];
+const nodeChatHistories={};  // nodeId → [{role,content}]
+
+function initProofChat(node){
+  // restore per-node history (persists across edits within the session)
+  proofChatHistory=nodeChatHistories[node.id]||(nodeChatHistories[node.id]=[]);
+  const msgs=$('#eProofChatMsgs');
+  msgs.innerHTML='';
+  // replay existing history into the UI
+  proofChatHistory.forEach(m=>{
+    const el=document.createElement('div');
+    el.className='pchat-msg pchat-'+m.role;
+    el.innerHTML=`<span class="pchat-bubble"></span>`;
+    el.querySelector('.pchat-bubble').textContent=m.content;
+    msgs.appendChild(el);
+  });
+  msgs.scrollTop=msgs.scrollHeight;
+  $('#eProofChatInput').value='';
+}
+
+function proofChatAddMsg(role, text){
+  proofChatHistory.push({role,content:text});
+  const msgs=$('#eProofChatMsgs');
+  const el=document.createElement('div');
+  el.className='pchat-msg pchat-'+role;
+  el.innerHTML=`<span class="pchat-bubble"></span>`;
+  msgs.appendChild(el);
+  const bubble=el.querySelector('.pchat-bubble');
+  bubble.textContent=text;
+  msgs.scrollTop=msgs.scrollHeight;
+  return bubble;
+}
+
+async function sendProofChat(){
+  const input=$('#eProofChatInput');
+  const msg=input.value.trim(); if(!msg)return;
+  input.value=''; input.disabled=true;
+  $('#eProofChatSend').disabled=true;
+
+  // show user bubble
+  proofChatAddMsg('user', msg);
+
+  const proofText=$('#eProof').value.trim();
+  const nodeKind=$('#eKind').value;
+  const nodeTitle=$('#eTitle').value.trim();
+  const nodeStmt=$('#eStmt').value.trim();
+
+  const system=`You are a mathematical assistant helping the user write and refine a proof in Margin, a theorem graph notebook.
+Node: (${nodeKind}) "${nodeTitle}"
+Statement: ${nodeStmt}
+${proofText?`Current proof:\n${proofText}`:'No proof written yet.'}
+Be concise. You may suggest LaTeX. When the user asks you to write or rewrite the proof, produce the full proof text they can copy in.`;
+
+  // build messages from history (exclude the just-added user msg — we'll append it)
+  const history=proofChatHistory.slice(0,-1).slice(-8);
+  const messages=[{role:'system',content:system},...history,{role:'user',content:msg}];
+
+  // streaming assistant bubble
+  const msgs=$('#eProofChatMsgs');
+  const el=document.createElement('div');
+  el.className='pchat-msg pchat-assistant';
+  el.innerHTML=`<span class="pchat-bubble"></span>`;
+  msgs.appendChild(el);
+  const aiBubble=el.querySelector('.pchat-bubble');
+  msgs.scrollTop=msgs.scrollHeight;
+
+  try{
+    const full=await callAI(messages, text=>{
+      aiBubble.textContent=text;
+      msgs.scrollTop=msgs.scrollHeight;
+    });
+    proofChatHistory.push({role:'assistant',content:full});
+  }catch(err){
+    aiBubble.textContent='Error: '+err.message;
+    aiBubble.style.color='var(--danger,#B5503A)';
+  }
+  input.disabled=false;
+  $('#eProofChatSend').disabled=false;
+  input.focus();
+}
+
+$('#eProofChatSend').onclick=sendProofChat;
+$('#eProofChatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendProofChat();}});
+
+/* ── Proof Architect ──────────────────────────────────────────────────── */
+let architectNodeId=null;
+let architectResult=null;
+
+async function openArchitect(nodeId){
+  const n=byId(nodeId); if(!n)return;
+  const proofText=(n.proof?.text||'').trim();
+  if(!proofText){
+    toast('Write a proof first — Architect will break it into nodes.');
+    return;
+  }
+  architectNodeId=nodeId; architectResult=null;
+  $('#archTargetBadge').textContent=n.title;
+  $('#archBody').innerHTML=`<div class="arch-loading"><div class="arch-spinner"></div><div>Decomposing proof into nodes…</div><div class="arch-stream" id="archStream"></div></div>`;
+  $('#archFooter').style.display='none';
+  $('#architectScrim').classList.add('open');
+
+  const targetDeps=(n.uses||[]).map(byId).filter(Boolean);
+  const otherNodes=data.nodes.filter(x=>x.id!==n.id&&!(n.uses||[]).includes(x.id)).slice(0,40);
+
+  const systemPrompt=`You are a mathematical proof architect embedded in Margin, a theorem graph notebook. Given a target statement and the user's written proof, you decompose the proof into clean intermediate nodes (lemmas, definitions, propositions) that can live as separate graph nodes. Output structured JSON only — no prose outside the JSON.`;
+
+  const userPrompt=`Target to prove:
+Kind: ${n.kind}
+Title: ${n.title}
+Statement: ${n.statement}
+
+User's written proof:
+${proofText}
+
+Already-declared dependencies (existing nodes connected to the target):
+${targetDeps.length?targetDeps.map(d=>`  [${d.id}] (${d.kind}) "${d.title}": ${d.statement}`).join('\n'):'  (none)'}
+
+Other available nodes in the graph (can be referenced as dependencies):
+${otherNodes.length?otherNodes.map(x=>`  [${x.id}] (${x.kind}) "${x.title}": ${x.statement}`).join('\n'):'  (none)'}
+
+Decompose the user's proof into 2–5 intermediate nodes (key lemmas, sub-claims, or definitions introduced in the proof). Each node should be a clean, reusable mathematical unit that captures one logical step from the proof.
+
+Respond with ONLY valid JSON:
+{
+  "strategy": "2–3 sentence description of how you decomposed the proof and what each node captures",
+  "nodes": [
+    {
+      "kind": "lemma",
+      "title": "Short descriptive title",
+      "statement": "Precise mathematical statement (LaTeX supported with $...$ and $$...$$)",
+      "proof": "The relevant excerpt or condensed proof of this sub-claim, from the user's proof",
+      "dependsOnExisting": ["existing-node-id"],
+      "dependsOnNew": []
+    }
+  ],
+  "targetDependsOnNew": [0, 1]
+}
+Rules:
+- Extract nodes from the actual proof text — do not invent new mathematics not present in the proof
+- dependsOnExisting: IDs from the available nodes listed above only
+- dependsOnNew: 0-based indices into your nodes array (dependencies between new nodes)
+- targetDependsOnNew: indices of new nodes that the target directly uses`;
+
+  try{
+    const raw=await callAI(
+      [{role:'system',content:systemPrompt},{role:'user',content:userPrompt}],
+      full=>{ const el=$('#archStream'); if(el) el.textContent=full.slice(-140).replace(/^[^{]*/,'')+'…'; }
+    );
+    const m=raw.match(/\{[\s\S]*\}/); if(!m)throw new Error('Unexpected response format.');
+    const parsed=JSON.parse(m[0]);
+    architectResult={
+      strategy:parsed.strategy||'',
+      targetDependsOnNew:parsed.targetDependsOnNew||[],
+      nodes:(parsed.nodes||[]).map(nd=>({...nd,dependsOnExisting:nd.dependsOnExisting||[],dependsOnNew:nd.dependsOnNew||[],_state:'pending'}))
+    };
+    renderArchitectResult();
+  }catch(err){
+    $('#archBody').innerHTML=`<div class="arch-loading" style="gap:10px"><div style="font-size:22px">⚠</div><div style="color:#B5503A;font-weight:600">${err.message}</div><div style="font-size:12px;color:var(--ink-faint)">Check your API key in Preferences → AI Integration.</div></div>`;
+  }
+}
+
+function renderArchitectResult(){
+  if(!architectResult)return;
+  const {strategy,nodes}=architectResult;
+  let html='';
+  if(strategy) html+=`<div class="arch-strategy">${strategy}</div>`;
+  if(!nodes.length){
+    html+=`<div style="color:var(--ink-faint);font-size:13px;padding:20px 0;text-align:center">No intermediate nodes suggested — the statement may follow directly from its dependencies.</div>`;
+  }
+  nodes.forEach((node,i)=>{
+    const kc=KIND_COLOR[node.kind]||KIND_COLOR.remark;
+    const chips=[
+      ...node.dependsOnExisting.map(id=>{const nd=byId(id);return `<span class="arch-dep-chip">${nd?nd.title.split('(')[0].trim():id}</span>`;}),
+      ...node.dependsOnNew.map(idx=>`<span class="arch-dep-chip arch-dep-new">↑ ${nodes[idx]?.title||'node '+idx}</span>`)
+    ].join('');
+    html+=`<div class="arch-node-card ${node._state}" data-idx="${i}">
+      <div class="arch-card-hd">
+        <span class="arch-kind" style="color:${kc.bd}">${node.kind}</span>
+        <span class="arch-title">${esc(node.title)}</span>
+      </div>
+      <div class="arch-stmt" id="archStmt${i}"></div>
+      ${chips?`<div class="arch-deps">${chips}</div>`:''}
+      <div class="arch-card-actions">
+        <button class="btn ${node._state==='accepted'?'primary':''}" data-accept="${i}">${node._state==='accepted'?'✓ Accepted':'Accept'}</button>
+        <button class="btn ${node._state==='rejected'?'active':''}" data-reject="${i}">${node._state==='rejected'?'Rejected':'Reject'}</button>
+      </div>
+    </div>`;
+  });
+  $('#archBody').innerHTML=html;
+  nodes.forEach((_,i)=>{
+    const el=$('#archBody').querySelector(`#archStmt${i}`);
+    if(el){el.textContent=nodes[i].statement; typeset(el);}
+  });
+  $('#archBody').querySelectorAll('[data-accept]').forEach(b=>b.onclick=()=>{
+    const nd=architectResult.nodes[+b.dataset.accept];
+    nd._state=nd._state==='accepted'?'pending':'accepted'; renderArchitectResult();
+  });
+  $('#archBody').querySelectorAll('[data-reject]').forEach(b=>b.onclick=()=>{
+    const nd=architectResult.nodes[+b.dataset.reject];
+    nd._state=nd._state==='rejected'?'pending':'rejected'; renderArchitectResult();
+  });
+  const accepted=nodes.filter(nd=>nd._state==='accepted').length;
+  $('#archHint').textContent=`${accepted} of ${nodes.length} node${nodes.length!==1?'s':''} accepted`;
+  $('#archFooter').style.display='';
+}
+
+function applyArchitectResult(){
+  if(!architectResult||!architectNodeId)return;
+  const target=byId(architectNodeId); if(!target)return;
+  const {nodes,targetDependsOnNew}=architectResult;
+  const accepted=nodes.map((nd,i)=>({...nd,_origIdx:i})).filter(nd=>nd._state==='accepted');
+  if(!accepted.length){closeArchitect();return;}
+  const idMap={};
+  accepted.forEach((nd,i)=>{idMap[nd._origIdx]='arch:'+(nd.kind.slice(0,3))+'-'+Date.now()+'-'+i;});
+  accepted.forEach(nd=>{
+    const uses=[
+      ...nd.dependsOnExisting.filter(eid=>byId(eid)),
+      ...nd.dependsOnNew.filter(idx=>idMap[idx]!==undefined).map(idx=>idMap[idx])
+    ];
+    data.nodes.push({id:idMap[nd._origIdx],kind:nd.kind,title:nd.title,statement:nd.statement,uses,
+      proof:nd.kind==='definition'?null:{uses:[],text:nd.proof||''}});
+  });
+  const newDeps=targetDependsOnNew.filter(idx=>idMap[idx]!==undefined).map(idx=>idMap[idx]);
+  target.uses=[...new Set([...(target.uses||[]),...newDeps])];
+  closeArchitect(); derive(); renderAll();
+  toast(`Added ${accepted.length} node${accepted.length!==1?'s':''} to the graph.`);
+}
+
+function closeArchitect(){
+  $('#architectScrim').classList.remove('open');
+  architectNodeId=null; architectResult=null;
+}
+
+$('#archClose').onclick=closeArchitect;
+$('#archCancel').onclick=closeArchitect;
+$('#architectScrim').onclick=e=>{if(e.target===$('#architectScrim'))closeArchitect();};
+$('#archAcceptAll').onclick=()=>{architectResult&&architectResult.nodes.forEach(nd=>{if(nd._state!=='rejected')nd._state='accepted';});renderArchitectResult();};
+$('#archApply').onclick=applyArchitectResult;
+
+/* ── ⌘K search palette ──────────────────────────────────────────────────── */
+(function initSearch(){
+  let srActive=0;
+  const scrim=$('#searchScrim'), input=$('#searchInput'), results=$('#searchResults');
+
+  function openSearch(){ scrim.classList.add('open'); input.value=''; renderResults(''); input.focus(); }
+  function closeSearch(){ scrim.classList.remove('open'); }
+
+  function stripHtml(s){ const d=document.createElement('div'); d.innerHTML=s||''; return d.textContent||''; }
+
+  function renderResults(q){
+    q=q.toLowerCase().trim();
+    const matches=q
+      ? data.nodes.filter(n=>(n.title||'').toLowerCase().includes(q)||(stripHtml(n.statement||'')).toLowerCase().includes(q))
+      : data.nodes.slice(0,12);
+    results.innerHTML='';
+    srActive=0;
+    matches.slice(0,24).forEach((n,i)=>{
+      const row=document.createElement('div'); row.className='search-result'+(i===0?' sr-active':'');
+      row.innerHTML=`<span class="sr-kind">${n.kind}</span><span class="sr-title">${n.title||n.id}</span><span class="sr-stmt">${stripHtml(n.statement||'')}</span>`;
+      row.onmouseenter=()=>{ results.querySelectorAll('.search-result').forEach((r,j)=>r.classList.toggle('sr-active',j===i)); srActive=i; };
+      row.onclick=()=>{ closeSearch(); select(n.id); };
+      results.appendChild(row);
+    });
+  }
+
+  input.addEventListener('input',()=>renderResults(input.value));
+
+  input.addEventListener('keydown',e=>{
+    const rows=[...results.querySelectorAll('.search-result')];
+    if(e.key==='ArrowDown'){ e.preventDefault(); srActive=Math.min(srActive+1,rows.length-1); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); srActive=Math.max(srActive-1,0); }
+    else if(e.key==='Enter'){ const r=rows[srActive]; if(r) r.click(); return; }
+    else if(e.key==='Escape'){ closeSearch(); return; }
+    rows.forEach((r,i)=>r.classList.toggle('sr-active',i===srActive));
+    rows[srActive]?.scrollIntoView({block:'nearest'});
+  });
+
+  scrim.addEventListener('click',e=>{ if(e.target===scrim) closeSearch(); });
+
+  document.addEventListener('keydown',e=>{
+    if((e.metaKey||e.ctrlKey)&&e.key==='k'){ e.preventDefault(); openSearch(); }
+    if(e.key==='Escape'&&scrim.classList.contains('open')) closeSearch();
+  });
+})();
+
 function boot(){
+  loadPrefs();
+  if(loadAll()){
+    // autosave restored — sync project name display
+    syncProjName();
+  }
   renderAll();
   fitGraph();
 }
