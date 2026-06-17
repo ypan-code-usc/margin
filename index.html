@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Margin</title>
 
+<script src="vendor/pdfjs/pdf.min.js"></script>
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
 <script defer src="vendor/katex/katex.min.js"></script>
 <script defer src="vendor/katex/contrib/auto-render.min.js"></script>
@@ -16,6 +17,7 @@
 <div class="app">
   <header>
     <div class="brand"><span class="mark">Margin<span class="caret">›</span></span></div>
+    <button class="btn home-btn" id="homeBtn" title="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 12L12 3l9 9"/><path d="M9 21V12h6v9"/></svg></button>
     <span class="doc" id="docName">—</span>
     <span class="spacer"></span>
     <div class="progress" id="progressWrap">
@@ -44,11 +46,31 @@
           </div>
         </div>
         <label class="ps-new-btn" title="Load project from file"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>Open file…<input type="file" id="psLoad" accept=".json" style="position:absolute;opacity:0;pointer-events:none"></label>
+        <button class="ps-new-btn" id="importPaperBtn" title="Import a mathematical paper and convert it into a project using AI"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12h6M9 16h6M6 2h8l4 4v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14,2 14,8 20,8"/></svg>Import paper…</button>
+      </div>
+    </div>
+
+    <!-- Home page (shown when no project is active) -->
+    <div class="home-page" id="homePage">
+      <div class="home-inner">
+        <div class="home-greeting" id="homeGreeting"></div>
+        <div class="home-cal-wrap">
+          <div class="home-cal-label">Activity <span class="home-cal-year" id="homeCalYear"></span></div>
+          <div class="home-cal" id="homeCal"></div>
+          <div class="home-cal-legend"><span>Less</span><span class="hcl-cells"><span data-l="0"></span><span data-l="1"></span><span data-l="2"></span><span data-l="3"></span><span data-l="4"></span></span><span>More</span></div>
+        </div>
+        <div class="home-section-label">Projects</div>
+        <div class="home-cards" id="homeCards"></div>
+      </div>
+      <!-- Project detail side panel -->
+      <div class="home-detail" id="homeDetail">
+        <button class="home-detail-close" id="homeDetailClose">×</button>
+        <div class="home-detail-body" id="homeDetailBody"></div>
       </div>
     </div>
 
     <!-- Graph fills full area -->
-    <div class="graphfull">
+    <div class="graphfull" id="graphfull">
       <div class="gcanvas"><svg class="graph" id="graph" role="img" aria-label="Dependency graph"></svg></div>
 
       <!-- top-left: data controls -->
@@ -337,6 +359,48 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Import paper modal -->
+<div class="scrim" id="importPaperScrim">
+  <div class="import-paper-modal">
+    <div class="mh">
+      <h3>Import paper</h3>
+      <button class="x" id="importPaperClose">×</button>
+    </div>
+    <div class="import-paper-body">
+      <p class="import-paper-hint">Upload a PDF or paste the LaTeX / plain text of a mathematical paper. Claude will extract definitions, lemmas, theorems, and their dependencies and create a new project.</p>
+      <div class="import-paper-upload">
+        <label class="btn import-paper-file-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12h6M9 16h6M6 2h8l4 4v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14,2 14,8 20,8"/></svg>
+          <span id="importPaperFileLabel">Upload PDF…</span>
+          <input type="file" id="importPaperFile" accept=".pdf,application/pdf" style="position:absolute;opacity:0;pointer-events:none">
+        </label>
+        <span class="import-paper-or">or paste below</span>
+      </div>
+      <textarea id="importPaperText" placeholder="Paste paper content here (plain text or LaTeX)…" spellcheck="false"></textarea>
+      <div class="import-paper-status" id="importPaperStatus" style="display:none">
+        <span class="import-paper-spinner"></span>
+        <span id="importPaperStatusMsg">Analysing paper…</span>
+      </div>
+    </div>
+    <div class="mf">
+      <span class="muted">Requires an Anthropic API key set in Preferences.</span>
+      <button class="btn" id="importPaperCancel">Cancel</button>
+      <button class="btn primary" id="importPaperConvert">Convert →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="confirm-overlay" id="confirmOverlay" style="display:none">
+  <div class="confirm-box">
+    <div class="confirm-msg" id="confirmMsg"></div>
+    <div class="confirm-actions">
+      <button class="btn" id="confirmNo">Cancel</button>
+      <button class="btn danger" id="confirmYes" style="border-color:#E5C9C0;color:#B5503A;background:#F8EEEA">Delete</button>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

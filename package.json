@@ -11,11 +11,14 @@
     "type": "git",
     "url": "git+https://github.com/ypan-code-usc/margin.git"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "ypan-code-usc",
+  "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
     "electron": "^42.4.1",
     "katex": "^0.17.0"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^3.11.174"
   }
 }

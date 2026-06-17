@@ -13,6 +13,12 @@ if [ ! -d "node_modules/electron/dist" ]; then
   node node_modules/electron/install.js
 fi
 
+# Refresh vendor/pdfjs from node_modules
+echo "→ Updating vendor/pdfjs..."
+mkdir -p vendor/pdfjs
+cp node_modules/pdfjs-dist/build/pdf.min.js vendor/pdfjs/
+cp node_modules/pdfjs-dist/build/pdf.worker.min.js vendor/pdfjs/
+
 # Refresh vendor/katex from node_modules
 echo "→ Updating vendor/katex..."
 mkdir -p vendor/katex/contrib vendor/katex/fonts

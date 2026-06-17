@@ -59,32 +59,117 @@ let projCounter=0;
 const $=s=>document.querySelector(s);
 function clone(o){return JSON.parse(JSON.stringify(o));}
 
+const BLANK={project:{title:'Untitled'},nodes:[],sets:[]};
 function newProject(name,blueprint){
   projCounter++;
   const id='proj'+projCounter;
-  const d=blueprint?clone(blueprint):clone(SAMPLE);
+  const d=blueprint?clone(blueprint):clone(BLANK);
   if(!d.sets)d.sets=[];
-  projects.push({id,name:name||d.project?.title||'Untitled'});
+  const resolvedName=name||d.project?.title||'Untitled';
+  if(!d.project)d.project={};
+  d.project.title=resolvedName;
+  projects.push({id,name:resolvedName});
   projectData[id]=d;
+  projManualPos[id]={entity:{},node:{}};
   return id;
 }
 const projectData={}; // id -> data object
+const projManualPos={}; // id -> {entity:{}, node:{}}
+
+function showCanvas(){
+  const hp=$('#homePage'), gf=$('#graphfull');
+  if(hp) hp.classList.remove('visible');
+  if(gf) gf.style.display='';
+}
+function showHome(){
+  const hp=$('#homePage'), gf=$('#graphfull');
+  if(gf) gf.style.display='none';
+  if(hp){ hp.classList.add('visible'); renderHomePage(); }
+  $('#homeBtn')?.classList.add('active');
+  $('#docName').innerHTML='<b>Home</b>';
+}
+function goHome(){
+  if(activeProjectId){
+    projectData[activeProjectId]=clone(data);
+    projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
+    activeProjectId=null;
+  }
+  showHome(); renderProjList();
+}
 
 function switchProject(id){
-  if(activeProjectId===id)return;
-  if(activeProjectId)projectData[activeProjectId]=clone(data);
+  if(activeProjectId===id){ showCanvas(); return; }
+  if(activeProjectId){
+    projectData[activeProjectId]=clone(data);
+    projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
+  }
   activeProjectId=id;
   data=projectData[id];
   if(!data.sets)data.sets=[];
+  const pos=projManualPos[id]||{entity:{},node:{}};
+  Object.keys(entityManualPos).forEach(k=>delete entityManualPos[k]);
+  Object.keys(nodeManualPos).forEach(k=>delete nodeManualPos[k]);
+  Object.assign(entityManualPos,pos.entity||{});
+  Object.assign(nodeManualPos,pos.node||{});
+  showCanvas();
+  $('#homeBtn')?.classList.remove('active');
   selected=null; derive(); renderAll(); renderProjList();
 }
 
+let _confirmCallback=null;
+let _inlineInputCallback=null;
+function showInlineInput(title,current,onSave){
+  _inlineInputCallback=onSave;
+  $('#confirmMsg').innerHTML=`<b style="display:block;margin-bottom:8px">${title}</b><input id="confirmInput" type="text" style="width:100%;box-sizing:border-box;border:1px solid var(--accent);border-radius:7px;padding:6px 9px;font-size:13px;font-family:var(--font-ui);background:var(--surface);color:var(--ink);outline:none" value="">`;
+  $('#confirmYes').textContent='Rename';
+  $('#confirmOverlay').style.display='flex';
+  const inp=document.getElementById('confirmInput');
+  inp.value=current; inp.select(); inp.focus();
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter') $('#confirmYes').click();
+    if(e.key==='Escape') $('#confirmNo').click();
+  });
+}
+function showConfirm(msg,onYes){
+  _confirmCallback=onYes;
+  $('#confirmMsg').textContent=msg;
+  $('#confirmOverlay').style.display='flex';
+}
+(function(){
+  function closeConfirm(){ $('#confirmOverlay').style.display='none'; $('#confirmYes').textContent='Delete'; }
+  document.getElementById('confirmYes')?.addEventListener('click',()=>{
+    const inpEl=document.getElementById('confirmInput');
+    closeConfirm();
+    if(_inlineInputCallback){ _inlineInputCallback(inpEl?.value??''); _inlineInputCallback=null; }
+    else if(_confirmCallback){ _confirmCallback(); _confirmCallback=null; }
+  });
+  document.getElementById('confirmNo')?.addEventListener('click',()=>{
+    closeConfirm(); _confirmCallback=null; _inlineInputCallback=null;
+  });
+})();
+
 function deleteProject(id){
-  if(projects.length<=1){toast('Cannot delete the only project.');return;}
-  projects=projects.filter(p=>p.id!==id);
-  delete projectData[id];
-  if(activeProjectId===id) switchProject(projects[0].id);
-  else renderProjList();
+  const p=projects.find(x=>x.id===id);
+  showConfirm(`Delete project "${p?.name||'Untitled'}"? This cannot be undone.`, ()=>{
+    projects=projects.filter(p=>p.id!==id);
+    delete projectData[id];
+    delete projManualPos[id];
+    activeProjectId=null;
+    goHome();
+  });
+}
+
+function renameProject(id){
+  const p=projects.find(x=>x.id===id); if(!p) return;
+  showInlineInput(`Rename "${p.name||'Untitled'}"`, p.name||'', newName=>{
+    if(!newName.trim()) return;
+    p.name=newName.trim();
+    if(projectData[id]?.project) projectData[id].project.title=p.name;
+    if(activeProjectId===id && data.project) data.project.title=p.name;
+    renderProjList();
+    if($('#homePage').classList.contains('visible')) renderHomePage();
+    saveAll();
+  });
 }
 
 function renderProjList(){
@@ -166,8 +251,9 @@ function renderProjList(){
     const isActive=p.id===activeProjectId;
     const btn=document.createElement('button');
     btn.className='proj-item'+(isActive?' active':'');
-    btn.innerHTML=`<span class="pi-dot"></span><span class="pi-name">${p.name||'Untitled'}</span><button class="pi-del" title="Remove" data-pid="${p.id}">×</button>`;
-    btn.onclick=ev=>{if(ev.target.classList.contains('pi-del'))return; switchProject(p.id);};
+    btn.innerHTML=`<span class="pi-dot"></span><span class="pi-name">${p.name||'Untitled'}</span><button class="pi-ren" title="Rename">✎</button><button class="pi-del" title="Remove" data-pid="${p.id}">×</button>`;
+    btn.onclick=ev=>{if(ev.target.closest('.pi-del,.pi-ren'))return; switchProject(p.id);};
+    btn.querySelector('.pi-ren').onclick=ev=>{ev.stopPropagation();renameProject(p.id);};
     btn.querySelector('.pi-del').onclick=ev=>{ev.stopPropagation();deleteProject(p.id);};
     list.appendChild(btn);
   });
@@ -984,34 +1070,41 @@ function renderDetailPanel(){
 /* ===================== autosave ===================== */
 function saveAll(){
   try{
-    if(activeProjectId) projectData[activeProjectId]=clone(data);
+    if(activeProjectId){
+      projectData[activeProjectId]=clone(data);
+      projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
+    }
     localStorage.setItem('margin-autosave',JSON.stringify(
-      {projects,projectData,activeProjectId,projCounter,setCounter,entityManualPos,nodeManualPos}));
+      {projects,projectData,activeProjectId,projCounter,setCounter,projManualPos}));
   }catch(e){}
 }
 function loadAll(){
   try{
     const raw=localStorage.getItem('margin-autosave'); if(!raw)return false;
     const s=JSON.parse(raw);
-    if(!s.projects?.length||!s.activeProjectId||!s.projectData?.[s.activeProjectId]?.nodes?.length)
+    if(!s.projects?.length||!s.activeProjectId||!s.projectData?.[s.activeProjectId])
       {localStorage.removeItem('margin-autosave');return false;}
     projects.length=0; s.projects.forEach(p=>projects.push(p));
     Object.keys(projectData).forEach(k=>delete projectData[k]);
     Object.assign(projectData,s.projectData);
+    Object.keys(projManualPos).forEach(k=>delete projManualPos[k]);
+    Object.assign(projManualPos,s.projManualPos||{});
     projCounter=s.projCounter||1; setCounter=s.setCounter||0;
-    Object.assign(entityManualPos,s.entityManualPos||{});
-    Object.assign(nodeManualPos,s.nodeManualPos||{});
     activeProjectId=s.activeProjectId;
     data=projectData[activeProjectId];
     if(!data.sets)data.sets=[];
+    const pos=projManualPos[activeProjectId]||{entity:{},node:{}};
+    Object.assign(entityManualPos,pos.entity||{});
+    Object.assign(nodeManualPos,pos.node||{});
     return true;
   }catch(e){return false;}
 }
 
 /* ===================== renderAll ===================== */
 function renderAll(){
+  if(!activeProjectId) return;
   derive(); renderGraph(); renderDetailPanel(); renderLegend(); updateProgress();
-  $('#docName').innerHTML='project · <b>'+data.project.title+'</b>';
+  $('#docName').innerHTML='project · <b>'+(data.project?.title||'Untitled')+'</b>';
   renderProjList();
   saveAll();
 }
@@ -1336,6 +1429,7 @@ $('#addMenu').querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
   cnt++;const id=btn.dataset.kind.slice(0,3)+':new-'+cnt;
   const isdef=btn.dataset.kind==='definition';
   data.nodes.push({id,kind:btn.dataset.kind,title:'Untitled '+btn.dataset.kind,statement:'<span style="color:var(--ink-faint)">Write the statement. Use $\\LaTeX$, then list dependencies.</span>',uses:[],proof:isdef?null:{uses:[],text:''}});
+  recordActivity();
   $('#addMenu').classList.remove('open');select(id,true);toast(kindLabel(btn.dataset.kind)+' added.');
 });
 
@@ -1564,6 +1658,7 @@ $('#eSaveBtn').onclick=()=>{
   if(!nowNonDef) n.proof=null;
   if(n.proof) n.proof.text=$('#eProof').value;
   closeEditModal();
+  recordActivity();
   derive(); renderAll();
   toast('Block saved.');
 };
@@ -1609,6 +1704,7 @@ function typeset(node){if(window.renderMathInElement){try{renderMathInElement(no
   projects.push({id:firstId,name:data.project?.title||'Finsler Systolic'});
   projectData[firstId]=data;
   activeProjectId=firstId;
+  projManualPos[firstId]={entity:{},node:{}};
 
   const sidebar=$('#projSidebar');
   $('#psToggle').onclick=()=>{
@@ -1650,6 +1746,141 @@ function typeset(node){if(window.renderMathInElement){try{renderMathInElement(no
   };
 
   renderProjList();
+})();
+
+/* ===================== import paper ===================== */
+const PAPER_EXTRACT_PROMPT=`You are a mathematical knowledge extraction assistant. Read the paper and extract every named mathematical object: definitions, lemmas, theorems, propositions, corollaries, and remarks. For each one, identify which other objects in this paper it directly depends on.
+
+Return ONLY valid JSON — no markdown fences, no explanation:
+{
+  "project": { "title": "<paper title>" },
+  "nodes": [
+    {
+      "id": "<prefix>:<slug>",
+      "kind": "definition|lemma|theorem|proposition|corollary|remark",
+      "title": "<short name>",
+      "statement": "<full statement, preserve LaTeX>",
+      "uses": ["<id>"],
+      "proof": null
+    }
+  ]
+}
+Rules:
+- id prefixes: def: lem: thm: prop: cor: rmk:
+- id slugs: lowercase, hyphens only, unique
+- uses: only ids defined earlier in this same output; [] if none
+- proof: null for definitions; for others: {"uses":[],"text":"<proof if present, else empty>"}
+- Preserve LaTeX ($...$, $$...$$, \\(...\\), \\[...\\]) exactly
+- Order nodes so dependencies come before the nodes that use them`;
+
+async function callClaudeExtract(key, userContent){
+  const resp=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-beta':'pdfs-2024-09-25','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-opus-4-8',max_tokens:8192,system:PAPER_EXTRACT_PROMPT,messages:[{role:'user',content:userContent}]})
+  });
+  if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error?.message||`API error ${resp.status}`);}
+  return resp.json();
+}
+
+function parseBlueprint(raw){
+  const cleaned=raw.replace(/^```(?:json)?\s*/,'').replace(/\s*```\s*$/,'').trim();
+  const bp=JSON.parse(cleaned);
+  if(!bp.nodes||!Array.isArray(bp.nodes)) throw new Error('Unexpected response format from Claude.');
+  return bp;
+}
+
+(function initImportPaper(){
+  const scrim=$('#importPaperScrim');
+  const textArea=$('#importPaperText');
+  const status=$('#importPaperStatus');
+  const statusMsg=$('#importPaperStatusMsg');
+  const convertBtn=$('#importPaperConvert');
+  const fileInput=$('#importPaperFile');
+  const fileLabel=$('#importPaperFileLabel');
+  let pendingPdfBase64=null;
+
+  function openModal(){
+    textArea.value=''; status.style.display='none'; convertBtn.disabled=false;
+    pendingPdfBase64=null; fileLabel.textContent='Upload PDF…';
+    scrim.classList.add('open'); textArea.focus();
+  }
+  function closeModal(){ scrim.classList.remove('open'); pendingPdfBase64=null; }
+
+  $('#importPaperBtn').onclick=openModal;
+  $('#importPaperClose').onclick=closeModal;
+  $('#importPaperCancel').onclick=closeModal;
+  scrim.addEventListener('click',e=>{ if(e.target===scrim) closeModal(); });
+
+  // Configure pdf.js worker using absolute URL so file:// context resolves it correctly
+  if(window.pdfjsLib){
+    const base=window.location.href.replace(/\/[^/]*$/, '/');
+    pdfjsLib.GlobalWorkerOptions.workerSrc=base+'vendor/pdfjs/pdf.worker.min.js';
+  }
+
+  async function extractPdfText(arrayBuffer){
+    if(!window.pdfjsLib) throw new Error('PDF library not loaded.');
+    const pdf=await pdfjsLib.getDocument({data:arrayBuffer}).promise;
+    const pages=[];
+    for(let i=1;i<=pdf.numPages;i++){
+      const page=await pdf.getPage(i);
+      const content=await page.getTextContent();
+      pages.push(content.items.map(it=>it.str).join(' '));
+    }
+    return pages.join('\n\n');
+  }
+
+  // PDF file input
+  fileInput.onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    fileLabel.textContent=f.name+' (reading…)';
+    try{
+      const buf=await f.arrayBuffer();
+      statusMsg.textContent='Extracting text from PDF…';
+      status.style.display='flex'; convertBtn.disabled=true;
+      const extracted=await extractPdfText(buf);
+      status.style.display='none'; convertBtn.disabled=false;
+      if(!extracted.trim()) throw new Error('No readable text found in this PDF.');
+      pendingPdfBase64=extracted; // reuse field to store extracted text
+      fileLabel.textContent=f.name;
+      textArea.value=extracted;
+      textArea.placeholder='PDF text extracted — review or edit, then click Convert.';
+    }catch(err){
+      status.style.display='flex';
+      statusMsg.textContent='Error: '+err.message;
+      convertBtn.disabled=false;
+      fileLabel.textContent='Upload PDF…';
+    }
+    e.target.value='';
+  };
+
+  convertBtn.onclick=async()=>{
+    const text=textArea.value.trim();
+    if(!text){ toast('Upload a PDF or paste paper text first.'); return; }
+    const key=prefs.anthropicKey?.trim();
+    if(!key){ toast('Set your Anthropic API key in Preferences first.'); return; }
+
+    convertBtn.disabled=true;
+    status.style.display='flex';
+    statusMsg.textContent='Extracting mathematical structure…';
+
+    try{
+      const result=await callClaudeExtract(key,`Here is the paper to extract:\n\n${text}`);
+      const raw=result.content?.[0]?.text||'';
+      statusMsg.textContent='Parsing result…';
+      const blueprint=parseBlueprint(raw);
+      closeModal();
+      textArea.placeholder='Paste paper content here (plain text or LaTeX)…';
+      const title=blueprint.project?.title||'Imported paper';
+      const id=newProject(title,blueprint);
+      switchProject(id);
+      toast(`Imported "${title}" — ${blueprint.nodes.length} nodes created.`);
+    }catch(err){
+      status.style.display='flex';
+      statusMsg.textContent='Error: '+err.message;
+      convertBtn.disabled=false;
+    }
+  };
 })();
 
 /* keep project name in sync when data.project.title changes */
@@ -2035,14 +2266,153 @@ $('#archApply').onclick=applyArchitectResult;
   });
 })();
 
+/* ===================== activity log ===================== */
+let activityLog={}; // {YYYY-MM-DD: count}
+function loadActivity(){
+  try{ const r=localStorage.getItem('margin-activity'); if(r) activityLog=JSON.parse(r); }catch(e){}
+}
+function saveActivity(){
+  try{ localStorage.setItem('margin-activity',JSON.stringify(activityLog)); }catch(e){}
+}
+function recordActivity(){
+  const d=new Date(); const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  activityLog[key]=(activityLog[key]||0)+1; saveActivity();
+}
+
+/* ===================== home page ===================== */
+function renderHomePage(){
+  const hp=$('#homePage'); if(!hp) return;
+  // greeting
+  const h=new Date().getHours();
+  const timeWord=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+  const name=prefs.name?.trim();
+  $('#homeGreeting').innerHTML=name?`${timeWord}, <span>${name}</span>.`:`${timeWord}.`;
+
+  // activity calendar (12 weeks)
+  const cal=$('#homeCal'); cal.innerHTML='';
+  const today=new Date(); today.setHours(0,0,0,0);
+  const WEEKS=16;
+  // start from Monday of the week 16 weeks ago
+  const startDay=new Date(today); startDay.setDate(today.getDate()-WEEKS*7+1);
+  // find max for scaling
+  const counts=Object.values(activityLog); const maxC=Math.max(...counts,1);
+  function levelFor(c){ if(!c)return 0; const r=c/maxC; return r<.25?1:r<.5?2:r<.75?3:4; }
+  function dateKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+  $('#homeCalYear').textContent=today.getFullYear();
+  const cur=new Date(startDay);
+  for(let w=0;w<WEEKS;w++){
+    const col=document.createElement('div'); col.className='hcol';
+    for(let d=0;d<7;d++){
+      const cell=document.createElement('div'); cell.className='hcell';
+      const key=dateKey(cur); const cnt=activityLog[key]||0;
+      const lv=levelFor(cnt); if(lv) cell.dataset.l=lv;
+      cell.title=key+(cnt?` · ${cnt} edit${cnt>1?'s':''}`:'');
+      col.appendChild(cell);
+      cur.setDate(cur.getDate()+1);
+    }
+    cal.appendChild(col);
+  }
+
+  // project cards
+  const cards=$('#homeCards'); cards.innerHTML='';
+  // new project card
+  const nc=document.createElement('button'); nc.className='home-card new-card';
+  nc.innerHTML=`<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5v14M5 12h14"/></svg><span>New project</span>`;
+  nc.onclick=()=>{ $('#psNew').click(); };
+  cards.appendChild(nc);
+
+  const ic=document.createElement('button'); ic.className='home-card new-card';
+  ic.innerHTML=`<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M6 2h8l4 4v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14,2 14,8 20,8"/></svg><span>Import from paper</span>`;
+  ic.onclick=()=>{ $('#importPaperBtn').click(); };
+  cards.appendChild(ic);
+
+  projects.forEach(p=>{
+    const d=projectData[p.id]; if(!d) return;
+    const nodes=d.nodes||[]; const total=nodes.length;
+    const nonDef=nodes.filter(n=>n.kind!=='definition');
+    const proved=nonDef.filter(n=>n.proof?.text?.trim()).length;
+    const pct=nonDef.length?Math.round(proved/nonDef.length*100):0;
+    const sets=(d.sets||[]).length;
+    const card=document.createElement('button'); card.className='home-card';
+    card.innerHTML=`
+      <div class="home-card-mini" id="hcmini-${p.id}"></div>
+      <div class="home-card-name">${p.name||'Untitled'}</div>
+      <div class="home-card-stats">
+        <div class="home-card-stat"><b>${total}</b><span>nodes</span></div>
+        <div class="home-card-stat"><b>${pct}%</b><span>proved</span></div>
+        <div class="home-card-stat"><b>${sets}</b><span>sets</span></div>
+      </div>`;
+    card.onclick=()=>openProjectDetail(p.id);
+    cards.appendChild(card);
+    // render mini graph async
+    setTimeout(()=>renderMiniGraph(p.id, document.getElementById('hcmini-'+p.id)), 0);
+  });
+}
+
+function renderMiniGraph(pid, container){
+  if(!container) return;
+  const d=projectData[pid]; if(!d) return;
+  const nodes=d.nodes||[]; if(!nodes.length){ container.innerHTML='<svg></svg>'; return; }
+  const W=container.clientWidth||220, H=container.clientHeight||70;
+  const PAD=10, cols=Math.ceil(Math.sqrt(nodes.length*1.5));
+  const cw=(W-PAD*2)/Math.max(cols,1); const ch=(H-PAD*2)/Math.max(Math.ceil(nodes.length/cols),1);
+  const pos={};
+  nodes.forEach((n,i)=>{ pos[n.id]={x:PAD+(i%cols+.5)*cw, y:PAD+(Math.floor(i/cols)+.5)*ch}; });
+  const kindColor={'definition':'#6B9080','lemma':'#7B93C4','theorem':'#C07B8E','remark':'#A89262','proposition':'#7B93C4','corollary':'#7B93C4'};
+  let svg=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  // edges
+  nodes.forEach(n=>{ (n.uses||[]).forEach(uid=>{ const a=pos[n.id],b=pos[uid]; if(a&&b) svg+=`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#ccc" stroke-width="1" opacity=".7"/>`; }); });
+  // nodes
+  nodes.forEach(n=>{ const p=pos[n.id]; const c=kindColor[n.kind]||'#999'; svg+=`<circle cx="${p.x}" cy="${p.y}" r="4" fill="${c}" opacity=".85"/>`; });
+  svg+='</svg>';
+  container.innerHTML=svg;
+}
+
+function openProjectDetail(pid){
+  const det=$('#homeDetail'), body=$('#homeDetailBody'); if(!det||!body) return;
+  const p=projects.find(x=>x.id===pid); if(!p) return;
+  const d=projectData[pid]||{nodes:[],sets:[]};
+  const nodes=d.nodes||[]; const total=nodes.length;
+  const nonDef=nodes.filter(n=>n.kind!=='definition');
+  const proved=nonDef.filter(n=>n.proof?.text?.trim()).length;
+  const pct=nonDef.length?Math.round(proved/nonDef.length*100):0;
+  const sets=(d.sets||[]).length;
+
+  // recent activity: last 5 nodes by edit timestamp (fall back to array order)
+  const recent=[...nodes].reverse().slice(0,5);
+  const actHtml=recent.length?recent.map(n=>`<div class="hd-act-item"><span class="hd-act-dot"></span><span>${n.kind[0].toUpperCase()+n.kind.slice(1)}: <b>${n.title||'—'}</b></span></div>`).join(''):'<div style="font-size:12px;color:var(--ink-faint)">No nodes yet.</div>';
+
+  body.innerHTML=`
+    <div class="hd-name">${p.name||'Untitled'}</div>
+    <div class="hd-stats">
+      <div class="hd-stat"><div class="hd-stat-val">${total}</div><div class="hd-stat-lbl">Nodes</div></div>
+      <div class="hd-stat"><div class="hd-stat-val">${pct}%</div><div class="hd-stat-lbl">Proved</div></div>
+      <div class="hd-stat"><div class="hd-stat-val">${sets}</div><div class="hd-stat-lbl">Sets</div></div>
+    </div>
+    <div class="hd-mini" id="hdMini"></div>
+    <div class="hd-section">Recent nodes</div>
+    <div class="hd-activity">${actHtml}</div>
+    <div class="hd-actions">
+      <button class="btn primary" id="hdOpen">Open →</button>
+      <button class="btn danger" id="hdDelete" style="border-color:#E5C9C0;color:#B5503A;background:#F8EEEA">Delete</button>
+    </div>`;
+
+  det.classList.add('open');
+  renderMiniGraph(pid, document.getElementById('hdMini'));
+  document.getElementById('hdOpen').onclick=()=>{ det.classList.remove('open'); switchProject(pid); };
+  document.getElementById('hdDelete').onclick=()=>{ det.classList.remove('open'); deleteProject(pid); renderHomePage(); };
+}
+
 function boot(){
   loadPrefs();
-  if(loadAll()){
-    // autosave restored — sync project name display
-    syncProjName();
-  }
-  renderAll();
-  fitGraph();
+  loadActivity();
+  if(loadAll()) syncProjName();
+  showHome();        // hides canvas, renders home page + sidebar
+  renderProjList();  // populate sidebar regardless
+  if(activeProjectId) derive(); // pre-derive so canvas is ready when opened
+  // wire home button
+  document.getElementById('homeBtn')?.addEventListener('click', goHome);
+  document.getElementById('homeDetailClose')?.addEventListener('click', ()=>$('#homeDetail').classList.remove('open'));
 }
 
 window.addEventListener('load', boot);
