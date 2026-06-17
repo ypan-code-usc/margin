@@ -1,6 +1,8 @@
 # Margin
 
-A macOS desktop app for building mathematical dependency graphs. Write definitions, lemmas, theorems, and remarks, connect them with dependency edges, and Margin automatically tracks which results are proved.
+Margin is a macOS desktop application for mathematicians that organizes mathematical knowledge as a dependency graph. Just as the structure of a proof can be understood as a directed acyclic graph — definitions grounding lemmas, lemmas supporting theorems — Margin makes that structure explicit and navigable. Its goal is to provide a faithful, visual representation of the dependency relations in a body of mathematics, with AI assistance for both construction and exploration.
+
+Write definitions, lemmas, theorems, and remarks; connect them with dependency edges; and Margin automatically determines which results are fully proved.
 
 > **Requires macOS on Apple Silicon (M1 or later).**
 
@@ -8,11 +10,11 @@ A macOS desktop app for building mathematical dependency graphs. Write definitio
 
 ## Screenshots
 
-![Dependency graph](screenshots/graph.png)
-*Layered dependency graph for "Tight contact structures and Anosov flows" — 4/7 nodes proved, knowledge sets collapsed.*
-
 ![Home dashboard](screenshots/home.png)
-*Home dashboard with activity calendar, quick-create cards, and project stats.*
+*Home dashboard — activity calendar, quick-create cards, and per-project statistics.*
+
+![Dependency graph](screenshots/graph.png)
+*Dependency graph for an imported paper, automatically extracted from a PDF by AI.*
 
 ---
 
@@ -113,7 +115,7 @@ Projects can be saved and loaded as `blueprint.json`:
 }
 ```
 
-`proof` is `null` for definitions. `uses` lists dependency IDs. A node is proved when all dependencies are proved and `proof.text` is non-empty.
+`proof` is `null` for definitions. `uses` lists dependency IDs. A node is proved when all its dependencies are proved and `proof.text` is non-empty.
 
 ---
 
