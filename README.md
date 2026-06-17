@@ -6,6 +6,16 @@ A macOS desktop app for building mathematical dependency graphs. Write definitio
 
 ---
 
+## Screenshots
+
+![Dependency graph](screenshots/graph.png)
+*Layered dependency graph for "Tight contact structures and Anosov flows" — 4/7 nodes proved, knowledge sets collapsed.*
+
+![Home dashboard](screenshots/home.png)
+*Home dashboard with activity calendar, quick-create cards, and project stats.*
+
+---
+
 ## Download
 
 Grab the latest DMG from the [Releases](https://github.com/ypan-code-usc/margin/releases) page, open it, and drag **Margin.app** to `/Applications`.
