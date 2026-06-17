@@ -27,6 +27,30 @@ Grab the latest DMG from the [Releases](https://github.com/ypan-code-usc/margin/
 > xattr -cr /Applications/Margin.app
 > ```
 
+### Install automatically with an AI assistant
+
+If you use an AI coding assistant, you can ask it to install Margin for you. Copy one of the prompts below and paste it into your assistant.
+
+**Claude Code**
+```
+Please install the Margin app on my Mac by running:
+bash <(curl -fsSL https://raw.githubusercontent.com/ypan-code-usc/margin/main/install.sh)
+```
+
+**GitHub Copilot / Codex** *(in agent mode)*
+```
+Run this shell command to install Margin on my Mac:
+bash <(curl -fsSL https://raw.githubusercontent.com/ypan-code-usc/margin/main/install.sh)
+```
+
+**OpenClaw / Hermes** *(or any terminal-capable agent)*
+```
+Execute the following to install the Margin macOS app:
+bash <(curl -fsSL https://raw.githubusercontent.com/ypan-code-usc/margin/main/install.sh)
+```
+
+The script downloads the latest DMG from GitHub Releases, copies `Margin.app` to `/Applications`, and removes the Gatekeeper quarantine flag — no manual steps needed.
+
 ---
 
 ## Features
