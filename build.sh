@@ -7,6 +7,12 @@ OUT="dist/Margin-${VERSION}-arm64.dmg"
 
 echo "Building Margin v${VERSION}..."
 
+# Ensure Electron binary is downloaded
+if [ ! -d "node_modules/electron/dist" ]; then
+  echo "→ Downloading Electron binary..."
+  node node_modules/electron/install.js
+fi
+
 # Refresh vendor/katex from node_modules
 echo "→ Updating vendor/katex..."
 mkdir -p vendor/katex/contrib vendor/katex/fonts
