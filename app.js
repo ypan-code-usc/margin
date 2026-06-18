@@ -93,11 +93,13 @@ function goHome(){
     projectData[activeProjectId]=clone(data);
     projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
     activeProjectId=null;
+    saveAll();
   }
   showHome(); renderProjList();
 }
 
 function switchProject(id){
+  currentUniverseId=null;
   if(activeProjectId===id){ showCanvas(); return; }
   if(activeProjectId){
     projectData[activeProjectId]=clone(data);
@@ -113,7 +115,7 @@ function switchProject(id){
   Object.assign(nodeManualPos,pos.node||{});
   showCanvas();
   $('#homeBtn')?.classList.remove('active');
-  selected=null; derive(); renderAll(); renderProjList();
+  selected=null; derive(); renderAll(); renderProjList(); fitGraph();
 }
 
 let _confirmCallback=null;
@@ -155,6 +157,7 @@ function deleteProject(id){
     delete projectData[id];
     delete projManualPos[id];
     activeProjectId=null;
+    saveAll();
     goHome();
   });
 }
@@ -220,7 +223,7 @@ function renderProjList(){
             const d=JSON.parse(r.result);
             if(!d.nodes||!Array.isArray(d.nodes))throw 0;
             gsCounter++;
-            globalSets.push({id:'gs'+gsCounter,name:d.project?.title||f.name.replace(/\.json$/,''),nodes:clone(d.nodes),project:clone(d.project||{})});
+            globalSets.push({id:'gs'+gsCounter,name:d.project?.title||f.name.replace(/\.json$/,''),nodes:clone(d.nodes),sets:clone(d.sets||[]),project:clone(d.project||{})});
             renderProjList();
             toast(`Added "${globalSets[globalSets.length-1].name}" to library.`);
           }catch{toast('Couldn\'t parse — expected blueprint.json with a "nodes" array.');}
@@ -352,6 +355,77 @@ let nodeManualPos={};
 let multiSel=new Set();
 let selectMode=false;
 let entityManualPos={};
+let currentUniverseId = null; // null = root universe
+
+// Objects directly in current universe
+function universeNodes() {
+  return data.nodes.filter(n => (n.setId || null) === currentUniverseId);
+}
+function universeSets() {
+  return (data.sets || []).filter(s => (s.parentSetId || null) === currentUniverseId);
+}
+
+// Map any node ID to the entity (node or set ID) that represents it in the current universe.
+// Returns null if the node is external to the current universe.
+function nodeToUniverseEntity(nodeId) {
+  const n = byId(nodeId); if (!n) return null;
+  if ((n.setId || null) === currentUniverseId) return nodeId; // directly in universe
+  if (!n.setId) return null; // free node in a different universe (root)
+  // Walk up set ancestors to find one whose parentSetId === currentUniverseId
+  let sid = n.setId;
+  while (sid) {
+    const s = setById(sid);
+    if (!s) break;
+    if ((s.parentSetId || null) === currentUniverseId) return sid; // s is directly in current universe
+    sid = s.parentSetId || null;
+  }
+  return null; // completely external
+}
+
+// Build breadcrumb path from root to currentUniverseId
+function universePath() {
+  const path = [];
+  let id = currentUniverseId;
+  while (id) {
+    const s = setById(id); if (!s) break;
+    path.unshift({ id, title: s.title || 'Set' });
+    id = s.parentSetId || null;
+  }
+  path.unshift({ id: null, title: 'Root' });
+  return path;
+}
+
+function enterUniverse(setId) {
+  currentUniverseId = setId;
+  selected = null;
+  // reset manual positions for new universe view
+  Object.keys(entityManualPos).forEach(k => delete entityManualPos[k]);
+  closeRelations();
+  renderAll();
+  requestAnimationFrame(fitGraph);
+}
+
+function renderBreadcrumb() {
+  const bc = $('#universeBreadcrumb'); if (!bc) return;
+  const path = universePath();
+  if (path.length <= 1) { bc.style.display = 'none'; return; }
+  bc.style.display = 'flex';
+  bc.innerHTML = path.map((p, i) => {
+    const isLast = i === path.length - 1;
+    return `<button class="bc-crumb${isLast ? ' bc-current' : ''}" data-uid="${p.id ?? ''}">${esc(p.title)}</button>${isLast ? '' : '<span class="bc-sep">›</span>'}`;
+  }).join('');
+  bc.querySelectorAll('.bc-crumb:not(.bc-current)').forEach(btn => {
+    btn.onclick = () => {
+      currentUniverseId = btn.dataset.uid || null;
+      selected = null;
+      Object.keys(entityManualPos).forEach(k => delete entityManualPos[k]);
+      closeRelations();
+      renderAll();
+      requestAnimationFrame(fitGraph);
+    };
+  });
+}
+
 function tint(hex,amt=0.86){const c=(hex||'#888').replace('#','');const r=parseInt(c.slice(0,2),16),g=parseInt(c.slice(2,4),16),b=parseInt(c.slice(4,6),16);const m=v=>Math.round(v+(255-v)*amt);return `rgb(${m(r)},${m(g)},${m(b)})`;}
 
 /* ---- entity-aware layered layout ---- */
@@ -386,109 +460,128 @@ function layeredLayout(ids, depsFn, sizeFn, opt){
     y+=layerH[L]+VGAP;}
   return {pos,W,H:Math.max(360,y-VGAP+TOP)};
 }
-function setInnerLayout(s){
-  const children=childSets(s.id);
-  const directNodeIds=(s.nodeIds||[]).filter(id=>byId(id));
-  const allEntityIds=[...directNodeIds,...children.map(cs=>cs.id)];
-  const allSet=new Set(allEntityIds);
+function layoutGraph(){
+  const nodes = universeNodes();
+  const sets = universeSets();
+  const entities = [], entMeta = {};
 
-  // build child set meta (size) recursively
-  const childMeta={};
-  children.forEach(cs=>{
-    if(cs.collapsed){childMeta[cs.id]={type:'set',w:setCollapsedW(cs),h:SET_COLLAPSED_H};}
-    else{const inner=setInnerLayout(cs);childMeta[cs.id]={type:'setopen',w:Math.max(180,inner.W),h:inner.H+SET_PAD,inner,childMeta:inner.childMeta};}
+  nodes.forEach(n => {
+    entities.push(n.id);
+    entMeta[n.id] = { type: 'node', node: n, w: boxW(n), h: BOX_H };
+  });
+  sets.forEach(s => {
+    entities.push(s.id);
+    const nodeCount = allNodesInSet(s.id).length;
+    const childCount = childSets(s.id).length;
+    entMeta[s.id] = { type: 'set', set: s, w: setCollapsedW(s), h: SET_COLLAPSED_H, nodeCount, childCount };
   });
 
-  const size=id=>{const n=byId(id);if(n)return{w:boxW(n),h:BOX_H};const m=childMeta[id];return m?{w:m.w,h:m.h}:{w:120,h:BOX_H};};
-
-  const dep=id=>{
-    const n=byId(id);
-    if(n){
-      return[...(n.uses||[]),...(n.proof?.uses||[])].map(d=>{
-        if(allSet.has(d))return d;
-        const cs=children.find(c=>(c.nodeIds||[]).includes(d));
-        return cs?cs.id:null;
-      }).filter(d=>d&&d!==id&&allSet.has(d));
+  const entitySet = new Set(entities);
+  const entDeps = id => {
+    const meta = entMeta[id];
+    if (meta.type === 'node') {
+      const n = meta.node;
+      return [...new Set([...(n.uses||[]),...(n.proof?.uses||[])])]
+        .map(uid => nodeToUniverseEntity(uid))
+        .filter(eid => eid && eid !== id && entitySet.has(eid));
+    } else {
+      const deps = new Set();
+      allNodesInSet(id).forEach(n => {
+        [...(n.uses||[]),...(n.proof?.uses||[])].forEach(uid => {
+          const eid = nodeToUniverseEntity(uid);
+          if (eid && eid !== id && entitySet.has(eid)) deps.add(eid);
+        });
+      });
+      return [...deps];
     }
-    const cs=setById(id);if(!cs)return[];
-    const deps=new Set();
-    allNodesInSet(cs.id).forEach(mn=>{
-      [...(mn.uses||[]),...(mn.proof?.uses||[])].forEach(d=>{
-        if(allSet.has(d)&&d!==id)deps.add(d);
-        const pcs=children.find(c=>c.id!==id&&(c.nodeIds||[]).includes(d));
-        if(pcs)deps.add(pcs.id);
+  };
+
+  const L = layeredLayout(entities, entDeps, id => ({ w: entMeta[id].w, h: entMeta[id].h }), { vgap: 72, hgap: 40 });
+  entities.forEach(id => { if (entityManualPos[id]) L.pos[id] = { ...L.pos[id], ...entityManualPos[id] }; });
+
+  const nodePos = {};
+  nodes.forEach(n => { nodePos[n.id] = L.pos[n.id]; });
+  sets.forEach(s => {
+    const ep = L.pos[s.id];
+    if (ep) allNodesInSet(s.id).forEach(n => { nodePos[n.id] = ep; });
+  });
+
+  return { entities, entMeta, entPos: L.pos, nodePos, W: L.W, H: L.H };
+}
+function computeEdges(lay){
+  const { entities, entPos } = lay;
+  const entitySet = new Set(entities);
+  const edges = [], edgeSet = new Set();
+
+  const stubMap = {}; // externalKey -> {label, targetUniverseId, fromEntities: Set, links:[]}
+
+  function addEdge(fromId, toId) {
+    const key = fromId + '|' + toId;
+    if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: fromId, to: toId }); }
+  }
+
+  function addStub(externalNodeId, fromEntityId) {
+    const extNode = byId(externalNodeId); if (!extNode) return;
+    const targetUniverseId = extNode.setId || null;
+    const key = externalNodeId;
+    if (!stubMap[key]) {
+      const label = extNode.title?.split('(')[0].trim() || externalNodeId;
+      const universeLabel = targetUniverseId ? (setById(targetUniverseId)?.title || 'Set') : 'Root';
+      stubMap[key] = { id: key, label, universeLabel, targetUniverseId, fromEntities: new Set(), links: [] };
+    }
+    stubMap[key].fromEntities.add(fromEntityId);
+    stubMap[key].links.push({ from: externalNodeId, to: fromEntityId });
+  }
+
+  // Edges from universe nodes
+  universeNodes().forEach(child => {
+    const tgt = child.id;
+    [...new Set([...(child.uses||[]),...(child.proof?.uses||[])])].forEach(pid => {
+      const srcEntity = nodeToUniverseEntity(pid);
+      if (srcEntity && srcEntity !== tgt && entitySet.has(srcEntity)) {
+        addEdge(srcEntity, tgt);
+      } else if (!srcEntity) {
+        addStub(pid, tgt);
+      }
+    });
+  });
+
+  // Edges from universe sets (aggregate)
+  universeSets().forEach(s => {
+    allNodesInSet(s.id).forEach(child => {
+      [...new Set([...(child.uses||[]),...(child.proof?.uses||[])])].forEach(pid => {
+        const srcEntity = nodeToUniverseEntity(pid);
+        if (srcEntity && srcEntity !== s.id && entitySet.has(srcEntity)) {
+          addEdge(srcEntity, s.id);
+        }
       });
     });
-    return[...deps];
-  };
+  });
 
-  const L=layeredLayout(allEntityIds,dep,size,{top:SET_HDR+12,vgap:80,side:SET_PAD,hgap:40});
-  return{...L,childMeta};
-}
-function layoutGraph(){
-  const entities=[], entMeta={};
-  data.nodes.forEach(n=>{if(!n.setId){entities.push(n.id);entMeta[n.id]={type:'node',node:n,w:boxW(n),h:BOX_H};}});
-  rootSets().forEach(s=>{
-    entities.push(s.id);
-    if(s.collapsed){entMeta[s.id]={type:'set',set:s,w:setCollapsedW(s),h:SET_COLLAPSED_H};}
-    else{
-      const inner=setInnerLayout(s);
-      (s.nodeIds||[]).forEach(nid=>{if(nodeManualPos[nid])inner.pos[nid]={...inner.pos[nid],...nodeManualPos[nid]};});
-      entMeta[s.id]={type:'setopen',set:s,w:Math.max(180,inner.W),h:inner.H+SET_PAD,inner,childMeta:inner.childMeta};
+  // Transitive reduction: remove edge (u→v) if v is reachable from u via another path.
+  // This prevents long-range "skip-layer" edges from cluttering the graph when a blueprint
+  // has dense cross-set dependencies.
+  const adj = {};
+  edges.forEach(e => { (adj[e.from] = adj[e.from] || []).push(e.to); });
+  function reachableViaOther(start, end) {
+    // BFS from start's neighbors (excluding direct edge to end)
+    const visited = new Set();
+    const queue = (adj[start] || []).filter(n => n !== end);
+    queue.forEach(n => visited.add(n));
+    while (queue.length) {
+      const cur = queue.shift();
+      if (cur === end) return true;
+      (adj[cur] || []).forEach(n => { if (!visited.has(n)) { visited.add(n); queue.push(n); } });
     }
-  });
-  const entDeps=id=>{
-    const meta=entMeta[id];
-    const nodes=meta.type==='node'?[meta.node]:allNodesInSet(id);
-    const out=new Set();
-    nodes.forEach(n=>[...(n.uses||[]),...(n.proof?.uses||[])].forEach(r=>{const e=entityIdOfNode(r);if(e&&e!==id&&entMeta[e])out.add(e);}));
-    return[...out];
-  };
-  const L=layeredLayout(entities,entDeps,id=>({w:entMeta[id].w,h:entMeta[id].h}),{});
-  entities.forEach(id=>{if(entityManualPos[id])L.pos[id]={...L.pos[id],...entityManualPos[id]};});
-
-  const nodePos={}, setAbsPos={};
-  function computePositions(sid, epAbs, meta){
-    const s=setById(sid);if(!s||!meta.inner)return;
-    const w=meta.w,h=meta.h,ox=epAbs.x-w/2,oy=epAbs.y-h/2;
-    setAbsPos[sid]=epAbs;
-    (s.nodeIds||[]).forEach(nid=>{const rp=meta.inner.pos[nid];if(rp)nodePos[nid]={x:ox+rp.x,y:oy+rp.y};});
-    const cm=meta.inner.childMeta||{};
-    childSets(sid).forEach(cs=>{
-      const csRel=meta.inner.pos[cs.id];if(!csRel)return;
-      const csMeta=cm[cs.id];if(!csMeta)return;
-      const csEp={x:ox+csRel.x,y:oy+csRel.y};
-      setAbsPos[cs.id]=csEp;
-      if(csMeta.type==='set'){allNodesInSet(cs.id).forEach(n=>nodePos[n.id]={x:csEp.x,y:csEp.y});}
-      else{computePositions(cs.id,csEp,csMeta);}
-    });
+    return false;
   }
-  entities.forEach(id=>{
-    const m=entMeta[id],ep=L.pos[id];
-    if(m.type==='node')nodePos[id]={x:ep.x,y:ep.y};
-    else if(m.type==='set'){setAbsPos[id]=ep;allNodesInSet(id).forEach(n=>nodePos[n.id]={x:ep.x,y:ep.y});}
-    else computePositions(id,ep,m);
-  });
-  return{entities,entMeta,entPos:L.pos,nodePos,setAbsPos,W:L.W,H:L.H};
-}
-function computeEntityEdges(){
-  const directed={}, internalOpen=[];
-  data.nodes.forEach(c=>{
-    [...new Set([...(c.uses||[]),...(c.proof?.uses||[])])].forEach(pid=>{const p=byId(pid); if(!p)return;
-      const se=entityIdOfNode(pid), te=entityIdOfNode(c.id);
-      if(se===te){
-        // internal edge — only include if the root set is open
-        const rs=setById(se);
-        if(rs&&!rs.collapsed) internalOpen.push({from:pid,to:c.id});
-        return;
-      }
-      const key=se+'=>'+te; (directed[key]=directed[key]||{src:se,tgt:te,links:[]}).links.push({from:pid,to:c.id});});
-  });
-  const seen=new Set(), edges=[];
-  Object.values(directed).forEach(d=>{const pkey=[d.src,d.tgt].sort().join('|'); if(seen.has(pkey))return; seen.add(pkey);
-    const rev=directed[d.tgt+'=>'+d.src];
-    edges.push({a:d.src,b:d.tgt,forward:d.links,backward:rev?rev.links:[],bidir:!!rev});});
-  return {edges,internalOpen};
+  // Only apply reduction when there are many set-level entities (node graphs stay as-is)
+  const reducedEdges = universeSets().length > 1
+    ? edges.filter(e => !reachableViaOther(e.from, e.to))
+    : edges;
+
+  const stubs = Object.values(stubMap);
+  return { edges: reducedEdges, stubs };
 }
 
 function edgePath(a,b){
@@ -527,135 +620,120 @@ function renderNodeCard(n, p, opts){
   return grp;
 }
 
+function renderSetPill(s, ep, meta) {
+  const col = s.color || '#888';
+  const w = (meta && meta.w) || 180, h = SET_COLLAPSED_H;
+  const isSel = selected === s.id;
+  const grp = mk('g', {
+    class: 'nodeset' + (isSel ? ' sel' : ''),
+    'data-role': 'setpill', id: 'set-' + s.id, 'data-setid': s.id,
+    transform: `translate(${ep.x},${ep.y})`
+  });
+  grp.appendChild(mk('rect', { class: 'ss-ring', x: -w/2-4, y: -h/2-4, width: w+8, height: h+8, rx: 14 }));
+  const stack = mk('g', { class: 'stack' });
+  stack.appendChild(mk('rect', { x: -w/2+7, y: -h/2-7, width: w-14, height: h, rx: 9, style: `fill:${tint(col)};stroke:${col};opacity:.55` }));
+  stack.appendChild(mk('rect', { x: -w/2+3.5, y: -h/2-3.5, width: w-7, height: h, rx: 9, style: `fill:${tint(col)};stroke:${col};opacity:.8` }));
+  stack.appendChild(mk('rect', { class: 'ss-body', x: -w/2, y: -h/2, width: w, height: h, rx: 9, style: `fill:#fff;stroke:${col}` }));
+  grp.appendChild(stack);
+
+  // "enter" arrow icon
+  const enterIcon = mk('g', { style: 'pointer-events:none' });
+  enterIcon.appendChild(mk('circle', { cx: w/2 - 16, cy: 0, r: 9, style: `fill:${col};opacity:.15` }));
+  const enterTxt = mk('text', { x: w/2 - 16, y: 1, 'text-anchor': 'middle', 'dominant-baseline': 'central', style: `fill:${col};font-size:11px;font-family:var(--font-ui);font-weight:700;pointer-events:none` });
+  enterTxt.textContent = '→';
+  enterIcon.appendChild(enterTxt);
+  grp.appendChild(enterIcon);
+
+  const tt = mk('text', { class: 'ss-title', x: -w/2+14, y: -4, style: `fill:${col}` });
+  tt.textContent = s.title || 'Set'; grp.appendChild(tt);
+  const nodeCount = allNodesInSet(s.id).length;
+  const childCount = childSets(s.id).length;
+  const ct = mk('text', { class: 'ss-count', x: -w/2+14, y: 10, style: 'fill:var(--ink-faint)' });
+  ct.textContent = nodeCount + ' nodes' + (childCount ? ' · ' + childCount + ' sets' : '');
+  grp.appendChild(ct);
+  return grp;
+}
+
 function renderGraph(){
   const g=$('#graph'); g.innerHTML='';
-  const lay=layoutGraph(); const {entities,entMeta,entPos,nodePos,setAbsPos,W,H}=lay;
+  const lay=layoutGraph();
+  const {entities,entMeta,entPos,nodePos,W,H}=lay;
 
   const defs=document.createElementNS(NS,'defs');
   const mkMarker=(id,color)=>{const m=mk('marker',{id,markerWidth:'7',markerHeight:'7',refX:'6',refY:'3.5',orient:'auto'});
     m.appendChild(mk('polygon',{points:'0 0, 7 3.5, 0 7',fill:color})); return m;};
   defs.appendChild(mkMarker('arrow','#c2cedb'));
   defs.appendChild(mkMarker('arrow-hot','var(--accent)'));
-  defs.appendChild(mkMarker('arrow-agg','var(--accent)'));
-  const mkMarkerS=(id,color)=>{const m=mk('marker',{id,markerWidth:'7',markerHeight:'7',refX:'1',refY:'3.5',orient:'auto'});
-    m.appendChild(mk('polygon',{points:'7 0, 0 3.5, 7 7',fill:color})); return m;};
-  defs.appendChild(mkMarkerS('arrow-agg-s','var(--accent)'));
+  defs.appendChild(mkMarker('arrow-stub','var(--ink-faint)'));
   g.appendChild(defs);
 
   const pan=mk('g',{transform:`translate(${graphPan.x},${graphPan.y}) scale(${graphZoom})`}); pan.id='graph-pan';
   const sel=byId(selected); const selDeps=sel?depsOf(sel).map(d=>d.id):[];
-  const {edges,internalOpen}=computeEntityEdges();
+  const {edges,stubs}=computeEdges(lay);
 
-  // 1. expanded-set frames (recursive helper)
-  function drawSetFrame(s, epAbs, m, parentGroup, parentEpAbs){
-    const col=s.color||'#888', w=m.w, h=m.h;
-    const tx=parentEpAbs?epAbs.x-parentEpAbs.x:epAbs.x;
-    const ty=parentEpAbs?epAbs.y-parentEpAbs.y:epAbs.y;
-    const fg=mk('g',{class:'setframe',id:`setframe-${s.id}`,transform:`translate(${tx},${ty})`});
-    fg.appendChild(mk('rect',{class:'frame',x:-w/2,y:-h/2,width:w,height:h,rx:14,style:`fill:${col};stroke:${col}`}));
-    const hdr=mk('g',{class:'fhdr'}); hdr.dataset.setId=s.id;
-    hdr.appendChild(mk('rect',{class:'fhdr-bg',x:-w/2,y:-h/2,width:w-64,height:30,rx:14}));
-    const childCount=childSets(s.id).length;
-    const tt=mk('text',{class:'ftitle',x:-w/2+14,y:-h/2+18,style:`fill:${col}`});
-    tt.textContent='▴ '+(s.title||'Set')+'  ·  '+(s.nodeIds||[]).length+(childCount?' + '+childCount+' sets':'');
-    hdr.appendChild(tt); fg.appendChild(hdr);
-    // "→ project" button (root sets only)
-    if(!s.parentSetId){
-      const expG=mk('g',{class:'fhdr-export',style:'pointer-events:auto;cursor:pointer'}); expG.dataset.setId=s.id;
-      expG.appendChild(mk('rect',{x:w/2-122,y:-h/2+4,width:58,height:22,rx:7,style:`fill:${col};opacity:.18`}));
-      const expT=mk('text',{x:w/2-93,y:-h/2+17,'text-anchor':'middle','dominant-baseline':'central',style:`fill:${col};font-size:10px;font-family:var(--font-ui);font-weight:600;pointer-events:none`});
-      expT.textContent='→ project'; expG.appendChild(expT); fg.appendChild(expG);
-    }
-    const delG=mk('g',{class:'fhdr-delete',style:'pointer-events:auto;cursor:pointer'}); delG.dataset.setId=s.id;
-    delG.appendChild(mk('rect',{x:w/2-58,y:-h/2+4,width:52,height:22,rx:7,style:`fill:${col};opacity:.18`}));
-    const delT=mk('text',{x:w/2-32,y:-h/2+17,'text-anchor':'middle','dominant-baseline':'central',style:`fill:${col};font-size:10px;font-family:var(--font-ui);font-weight:600;pointer-events:none`});
-    delT.textContent='✕ delete'; delG.appendChild(delT); fg.appendChild(delG);
-    // internal edges between any two nodes in this root set
-    const rootId=rootSetOf(s.id)?.id||s.id;
-    internalOpen.forEach(e=>{
-      if(entityIdOfNode(e.from)!==rootId||entityIdOfNode(e.to)!==rootId)return;
-      // only draw if both nodes belong to THIS set or its descendants
-      const descIds=new Set(allDescendantSetIds(s.id));
-      const nf=byId(e.from),nt=byId(e.to);
-      if(!nf||!nt||(!descIds.has(nf.setId)&&nf.setId!==s.id)||(!descIds.has(nt.setId)&&nt.setId!==s.id))return;
-      const a=nodePos[e.from],b=nodePos[e.to];if(!a||!b)return;
-      const ra={x:a.x-epAbs.x,y:a.y-epAbs.y},rb={x:b.x-epAbs.x,y:b.y-epAbs.y};
-      fg.appendChild(mk('path',{class:'edge','data-from':e.from,'data-to':e.to,d:edgePath(ra,rb),'marker-end':'url(#arrow)'}));
-    });
-    // nested child sets
-    const cm=m.inner?.childMeta||{};
-    childSets(s.id).forEach(cs=>{
-      const csAbsPos=setAbsPos[cs.id];if(!csAbsPos)return;
-      const csMeta=cm[cs.id];if(!csMeta)return;
-      if(csMeta.type==='setopen'){
-        drawSetFrame(cs,csAbsPos,csMeta,fg,epAbs);
-      } else {
-        // collapsed child set rendered inside parent frame
-        const col2=cs.color||'#888',w2=csMeta.w,h2=SET_COLLAPSED_H;
-        const rx=csAbsPos.x-epAbs.x,ry=csAbsPos.y-epAbs.y;
-        const cg=mk('g',{class:'nodeset'+(selected===cs.id?' sel':''),id:`set-${cs.id}`,transform:`translate(${rx},${ry})`});
-        cg.dataset.setId=cs.id;
-        const stack=mk('g',{class:'stack'});
-        stack.appendChild(mk('rect',{x:-w2/2+7,y:-h2/2-7,width:w2-14,height:h2,rx:9,style:`fill:${tint(col2)};stroke:${col2};opacity:.55`}));
-        stack.appendChild(mk('rect',{x:-w2/2+3.5,y:-h2/2-3.5,width:w2-7,height:h2,rx:9,style:`fill:${tint(col2)};stroke:${col2};opacity:.8`}));
-        stack.appendChild(mk('rect',{class:'ss-body',x:-w2/2,y:-h2/2,width:w2,height:h2,rx:9,style:`fill:#fff;stroke:${col2}`}));
-        cg.appendChild(stack);
-        const ct=mk('text',{class:'ss-count',x:-w2/2+36,y:0,style:`fill:${col2};font-size:10px`});ct.textContent=(cs.title||'Set')+' · '+( cs.nodeIds||[]).length+' nodes';cg.appendChild(ct);
-        fg.appendChild(cg);
-      }
-    });
-    // direct nodes of this set
-    (s.nodeIds||[]).forEach(nid=>{const n=byId(nid);const np=nodePos[nid];if(!n||!np)return;
-      const rp={x:np.x-epAbs.x,y:np.y-epAbs.y};
-      fg.appendChild(renderNodeCard(n,rp,{selDeps,inset:true}));});
-    parentGroup.appendChild(fg);
-  }
-  entities.forEach(id=>{const m=entMeta[id];if(m.type!=='setopen')return;
-    const ep=entPos[id];drawSetFrame(m.set,ep,m,pan,null);});
-
-  // 2. top-level edges
-  edges.forEach(e=>{
-    const agg=entMeta[e.a].type!=='node'||entMeta[e.b].type!=='node';
-    const ca=entityManualPos[e.a]||entPos[e.a], cb=entityManualPos[e.b]||entPos[e.b]; if(!ca||!cb)return;
-    if(!agg){
-      const hot=(e.a===selected||e.b===selected);
-      pan.appendChild(mk('path',{class:'edge'+(hot?' hot':''),id:`edge-${e.a}--${e.b}`,'data-a':e.a,'data-b':e.b,'data-kind':'node',
-        d:edgePath(ca,cb),'marker-end':`url(#${hot?'arrow-hot':'arrow'})`}));
-      return;
-    }
-    const ha=entMeta[e.a].h, hb=entMeta[e.b].h;
-    const path=mk('path',{class:'edge agg',id:`aggedge-${e.a}--${e.b}`,'data-a':e.a,'data-b':e.b,'data-kind':'agg','data-ha':ha,'data-hb':hb,
-      d:edgePath2(ca,cb,ha,hb)});
-    if(e.forward.length) path.setAttribute('marker-end','url(#arrow-agg)');
-    if(e.backward.length) path.setAttribute('marker-start','url(#arrow-agg-s)');
-    path.__links={forward:e.forward,backward:e.backward,a:e.a,b:e.b,bidir:e.bidir};
-    pan.appendChild(path);
-    const total=e.forward.length+e.backward.length, mx=(ca.x+cb.x)/2, my=(ca.y+cb.y)/2;
-    const cg=mk('g',{class:'edge-countg',style:'pointer-events:none'});
-    cg.appendChild(mk('circle',{class:'edge-count-bg',cx:mx,cy:my,r:9}));
-    const ct=mk('text',{class:'edge-count',x:mx,y:my,'text-anchor':'middle','dominant-baseline':'central'}); ct.textContent=total;
-    cg.appendChild(ct); pan.appendChild(cg);
+  // Layout boundary stubs above the main layout
+  const STUB_Y=-70;
+  const STUB_W=160, STUB_H=28;
+  const stubCount=stubs.length;
+  stubs.forEach((stub,i)=>{
+    const sx=W/2+(i-(stubCount-1)/2)*(STUB_W+20);
+    stub._pos={x:sx,y:STUB_Y};
   });
 
-  // 3. independent nodes
-  data.nodes.forEach(n=>{ if(n.setId)return; const p=nodePos[n.id]; if(!p)return;
-    pan.appendChild(renderNodeCard(n,p,{selDeps})); });
+  // Draw edges to stubs first (below everything)
+  stubs.forEach(stub=>{
+    if(!stub._pos)return;
+    stub.fromEntities.forEach(fromId=>{
+      const pa=entPos[fromId]||nodePos[fromId]; if(!pa)return;
+      const pb=stub._pos;
+      pan.appendChild(mk('path',{
+        class:'edge stub-edge',
+        d:`M ${pa.x} ${pa.y-BOX_H/2-2} C ${pa.x} ${(pa.y+pb.y)/2}, ${pb.x} ${(pa.y+pb.y)/2}, ${pb.x} ${pb.y+STUB_H/2}`,
+        'marker-end':'url(#arrow-stub)'
+      }));
+    });
+  });
 
-  // 4. collapsed set blocks (root sets only — child sets rendered inside parent frame)
-  (data.sets||[]).forEach(s=>{ if(!s.collapsed||s.parentSetId)return; const ep=entityManualPos[s.id]||entPos[s.id]; if(!ep)return;
-    const col=s.color||'#888', w=(entMeta[s.id]||{w:180}).w, h=SET_COLLAPSED_H;
-    const grp=mk('g',{class:'nodeset'+(selected===s.id?' sel':''),id:`set-${s.id}`,transform:`translate(${ep.x},${ep.y})`}); grp.dataset.setId=s.id;
-    grp.appendChild(mk('rect',{class:'ss-ring',x:-w/2-4,y:-h/2-4,width:w+8,height:h+8,rx:14}));
-    const stack=mk('g',{class:'stack'});
-    stack.appendChild(mk('rect',{x:-w/2+7,y:-h/2-7,width:w-14,height:h,rx:9,style:`fill:${tint(col)};stroke:${col};opacity:.55`}));
-    stack.appendChild(mk('rect',{x:-w/2+3.5,y:-h/2-3.5,width:w-7,height:h,rx:9,style:`fill:${tint(col)};stroke:${col};opacity:.8`}));
-    stack.appendChild(mk('rect',{class:'ss-body',x:-w/2,y:-h/2,width:w,height:h,rx:9,style:`fill:#fff;stroke:${col}`}));
-    grp.appendChild(stack);
-    grp.appendChild(mk('rect',{x:-w/2+14,y:-8,width:14,height:11,rx:2,style:`fill:${col}`}));
-    grp.appendChild(mk('rect',{x:-w/2+14,y:-11,width:7,height:3,rx:1.5,style:`fill:${col}`}));
-    const tt=mk('text',{class:'ss-title',x:-w/2+36,y:-3,style:`fill:${col}`}); tt.textContent=(s.title||'Set'); grp.appendChild(tt);
-    const ct=mk('text',{class:'ss-count',x:-w/2+36,y:12,style:'fill:var(--ink-faint)'}); ct.textContent=(s.nodeIds||[]).length+' nodes · click to expand'; grp.appendChild(ct);
+  // Draw same-universe edges
+  edges.forEach(e=>{
+    const pa=entPos[e.from]||nodePos[e.from];
+    const pb=entPos[e.to]||nodePos[e.to];
+    if(!pa||!pb)return;
+    const hot=(e.from===selected||e.to===selected);
+    pan.appendChild(mk('path',{
+      class:'edge'+(hot?' hot':''),
+      'data-from':e.from,'data-to':e.to,
+      d:edgePath(pa,pb),
+      'marker-end':`url(#${hot?'arrow-hot':'arrow'})`
+    }));
+  });
+
+  // Render boundary stubs
+  stubs.forEach(stub=>{
+    if(!stub._pos)return;
+    const {x,y}=stub._pos;
+    const grp=mk('g',{class:'stub-node','data-stubid':stub.id,'data-target-universe':stub.targetUniverseId||'',transform:`translate(${x},${y})`});
+    grp.appendChild(mk('rect',{x:-STUB_W/2,y:-STUB_H/2,width:STUB_W,height:STUB_H,rx:6}));
+    const lbl=mk('text',{x:-STUB_W/2+10,y:0,'dominant-baseline':'central'});
+    lbl.textContent='↗ '+stub.label;
+    grp.appendChild(lbl);
+    const sub=mk('text',{class:'stub-sub',x:-STUB_W/2+10,y:STUB_H/2-4});
+    sub.textContent='in '+stub.universeLabel;
+    grp.appendChild(sub);
     pan.appendChild(grp);
+  });
+
+  // Render node cards
+  universeNodes().forEach(n=>{
+    const p=nodePos[n.id]; if(!p)return;
+    const hot=(n.id===selected||selDeps.includes(n.id));
+    pan.appendChild(renderNodeCard(n,p,{selDeps,hot}));
+  });
+
+  // Render set pills
+  universeSets().forEach(s=>{
+    const ep=entPos[s.id]; if(!ep)return;
+    pan.appendChild(renderSetPill(s,ep,entMeta[s.id]));
   });
 
   g.appendChild(pan);
@@ -673,16 +751,27 @@ function svgCoords(svg, clientX, clientY){
 }
 
 function initGraphInteraction(svg, lay){
-  const center=id=>entityManualPos[id]||lay.entPos[id]||{x:0,y:0};
+  const {entMeta,entPos,nodePos}=lay;
+
+  const center=id=>{
+    if(entityManualPos[id])return entityManualPos[id];
+    if(lay.entPos[id])return lay.entPos[id];
+    return lay.nodePos[id]||null;
+  };
+
   function recalcEdges(eid){
-    svg.querySelectorAll('path.edge[data-a]').forEach(p=>{const a=p.dataset.a,b=p.dataset.b;
-      if(a!==eid&&b!==eid)return; const pa=center(a),pb=center(b); if(!pa||!pb)return;
-      if(p.dataset.kind==='agg') p.setAttribute('d',edgePath2(pa,pb,+p.dataset.ha,+p.dataset.hb));
-      else p.setAttribute('d',edgePath(pa,pb));});
+    const entityNode=byId(eid);
+    const nodeIds=entityNode?new Set([eid]):new Set(allNodesInSet(eid).map(n=>n.id));
+    const getPos=id=>entityManualPos[id]||lay.entPos[id]||lay.nodePos[id];
+    svg.querySelectorAll('path.edge[data-from]').forEach(p=>{
+      const from=p.dataset.from,to=p.dataset.to;
+      if(!nodeIds.has(from)&&!nodeIds.has(to)&&from!==eid&&to!==eid)return;
+      const pa=getPos(from),pb=getPos(to); if(!pa||!pb)return;
+      p.setAttribute('d',edgePath(pa,pb));
+    });
   }
 
-  let panStart=null, nodeDrag=null, setDrag=null, insetDrag=null, didMove=false;
-  let aggClick=null, insetClick=null;
+  let panStart=null, nodeDrag=null, setDrag=null, didMove=false;
   let lasso=null;
   let connectSrc=null, connectPreview=null;
   const canvas=svg.closest('.gcanvas');
@@ -715,65 +804,35 @@ function initGraphInteraction(svg, lay){
       else { multiSel.add(id); nodeGrp.classList.add('multi-sel'); }
       updateGroupControls(); return;
     }
-    // allow selecting a collapsed set in select mode
-    const collapsedSetGrp=e.target.closest('.nodeset');
+    const collapsedSetGrp=e.target.closest('[data-role="setpill"]');
     if(collapsedSetGrp && selectMode){
       e.preventDefault();
-      const id=collapsedSetGrp.dataset.setId;
+      const id=collapsedSetGrp.dataset.setid;
       if(multiSel.has(id)){ multiSel.delete(id); collapsedSetGrp.classList.remove('multi-sel'); }
       else { multiSel.add(id); collapsedSetGrp.classList.add('multi-sel'); }
       updateGroupControls(); return;
     }
-    const agg=e.target.closest('path.edge.agg');
-    if(agg){ e.preventDefault(); svg.setPointerCapture(e.pointerId); aggClick=agg; didMove=false; return; }
+    // stub node click — navigate to target universe
+    const stubNode=e.target.closest('.stub-node');
+    if(stubNode){
+      e.preventDefault();
+      const targetUid=stubNode.dataset.targetUniverse||null;
+      enterUniverse(targetUid||null);
+      return;
+    }
     if(nodeGrp){
       e.preventDefault(); svg.setPointerCapture(e.pointerId);
       const id=nodeGrp.dataset.id;
-      if(nodeGrp.classList.contains('inset')){
-        const frameEl=nodeGrp.closest('.setframe');
-        const frameId=frameEl?frameEl.id.replace('setframe-',''):null;
-        const innerP=frameId?lay.entMeta[frameId]:null;
-        const ep=frameId?(entityManualPos[frameId]||lay.entPos[frameId]):null;
-        insetClick=id;
-        insetDrag={id,frameId,ep,innerW:innerP?innerP.w:0,innerH:innerP?innerP.h:0,
-          startSvg:svgCoords(svg,e.clientX,e.clientY),
-          startPos:nodeManualPos[id]||(lay.nodePos[id]&&ep?{x:lay.nodePos[id].x-ep.x+((innerP?innerP.w:0)/2),y:lay.nodePos[id].y-ep.y+((innerP?innerP.h:0)/2)}:{x:0,y:0})};
-        didMove=false; return;
-      }
-      const cur=center(id); nodeDrag={id,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false;
+      const cur=center(id)||{x:0,y:0};
+      nodeDrag={id,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false;
       return;
     }
-    const expBtn=e.target.closest('.fhdr-export');
-    if(expBtn){ e.preventDefault(); e.stopPropagation(); exportSet(expBtn.dataset.setId); return; }
-    const delBtn=e.target.closest('.fhdr-delete');
-    if(delBtn){ e.preventDefault(); e.stopPropagation(); deleteSet(delBtn.dataset.setId); return; }
-    const fhdr=e.target.closest('.fhdr');
-    if(fhdr){
-      // header: drag moves the set; click (no move) toggles it
+    const setpill=e.target.closest('[data-role="setpill"]');
+    if(setpill){
       e.preventDefault(); svg.setPointerCapture(e.pointerId);
-      const id=fhdr.dataset.setId; const cur=center(id);
-      setDrag={id,collapsed:false,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
-    }
-    const setGrp=e.target.closest('.nodeset'); const frame=e.target.closest('.setframe');
-    if(setGrp){
-      // collapsed set pill — drag to nest/move, click to toggle
-      e.preventDefault(); svg.setPointerCapture(e.pointerId);
-      const id=setGrp.dataset.setId; const cur=center(id);
-      setDrag={id,collapsed:true,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
-    }
-    if(frame){
-      e.preventDefault(); svg.setPointerCapture(e.pointerId);
-      const fid=frame.id.replace('setframe-','');
-      if(selectMode){
-        // select mode: lasso inside the set
-        const sc=svgCoords(svg,e.clientX,e.clientY);
-        const r=mk('rect',{class:'lasso',x:sc.x,y:sc.y,width:0,height:0});
-        $('#graph-pan').appendChild(r);
-        lasso={startSvg:sc,rect:r,insideSetId:fid}; return;
-      }
-      // normal mode: drag the expanded set (click-only toggles it)
-      const cur=center(fid);
-      setDrag={id:fid,collapsed:false,startSvg:svgCoords(svg,e.clientX,e.clientY),startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
+      const id=setpill.dataset.setid; const cur=center(id)||{x:0,y:0};
+      const _sv=svgCoords(svg,e.clientX,e.clientY);_sv._cx=e.clientX;_sv._cy=e.clientY;
+      setDrag={id,startSvg:_sv,startPos:{x:cur.x,y:cur.y}}; didMove=false; return;
     }
     if(selectMode){
       e.preventDefault(); svg.setPointerCapture(e.pointerId);
@@ -795,54 +854,22 @@ function initGraphInteraction(svg, lay){
       const tgt=el&&el.closest('.node'); if(tgt&&tgt.dataset.id!==connectSrc.id) tgt.classList.add('connect-target');
       return;
     }
-    if(insetDrag){
-      const sc=svgCoords(svg,e.clientX,e.clientY);
-      const dx=sc.x-insetDrag.startSvg.x, dy=sc.y-insetDrag.startSvg.y;
-      const nx=insetDrag.startPos.x+dx, ny=insetDrag.startPos.y+dy;
-      nodeManualPos[insetDrag.id]={x:nx,y:ny};
-      const grp=svg.querySelector(`#node-${CSS.escape(insetDrag.id)}`);
-      if(grp){
-        const rx=nx-insetDrag.innerW/2, ry=ny-insetDrag.innerH/2;
-        grp.setAttribute('transform',`translate(${rx},${ry})`);
-        const frameEl=svg.querySelector(`#setframe-${CSS.escape(insetDrag.frameId)}`);
-        if(frameEl&&insetDrag.ep){
-          const ep=insetDrag.ep;
-          frameEl.querySelectorAll('path.edge').forEach(p=>{
-            const srcId=p.dataset.from, tgtId=p.dataset.to; if(!srcId||!tgtId)return;
-            const getRelPos=nid=>{if(nid===insetDrag.id)return{x:rx,y:ry};
-              const np=lay.nodePos[nid]; if(!np)return null; return{x:np.x-ep.x,y:np.y-ep.y};};
-            const pa=getRelPos(srcId), pb=getRelPos(tgtId); if(!pa||!pb)return;
-            p.setAttribute('d',edgePath(pa,pb));
-          });
-        }
-      }
-      didMove=true; return;
-    }
     if(nodeDrag){
       const sc=svgCoords(svg,e.clientX,e.clientY);
       const nx=nodeDrag.startPos.x+(sc.x-nodeDrag.startSvg.x), ny=nodeDrag.startPos.y+(sc.y-nodeDrag.startSvg.y);
       entityManualPos[nodeDrag.id]={x:nx,y:ny};
-      const grp=svg.querySelector(`#node-${CSS.escape(nodeDrag.id)}`); if(grp)grp.setAttribute('transform',`translate(${nx},${ny})`);
+      const grp=svg.querySelector('#node-'+CSS.escape(nodeDrag.id)); if(grp)grp.setAttribute('transform',`translate(${nx},${ny})`);
       recalcEdges(nodeDrag.id); didMove=true; return;
     }
     if(setDrag){
       const sc=svgCoords(svg,e.clientX,e.clientY);
+      const ddx=e.clientX-setDrag.startSvg._cx, ddy=e.clientY-setDrag.startSvg._cy;
+      if(!didMove&&ddx*ddx+ddy*ddy<16)return;
       const nx=setDrag.startPos.x+(sc.x-setDrag.startSvg.x), ny=setDrag.startPos.y+(sc.y-setDrag.startSvg.y);
       entityManualPos[setDrag.id]={x:nx,y:ny};
-      const el=svg.querySelector(`#set-${CSS.escape(setDrag.id)}`)||svg.querySelector(`#setframe-${CSS.escape(setDrag.id)}`);
-      if(el)el.setAttribute('transform',`translate(${nx},${ny})`);
+      const pill=svg.querySelector('#set-'+CSS.escape(setDrag.id));
+      if(pill)pill.setAttribute('transform',`translate(${nx},${ny})`);
       recalcEdges(setDrag.id);
-      // only highlight drop targets when dragging a collapsed set
-      if(setDrag.collapsed){
-      svg.querySelectorAll('.setframe').forEach(f=>f.classList.remove('drop-target'));
-      const hit=document.elementFromPoint(e.clientX,e.clientY);
-      const targetFrame=hit&&hit.closest('.setframe');
-      if(targetFrame){
-        const tid=targetFrame.id.replace('setframe-','');
-        const descIds=new Set(allDescendantSetIds(setDrag.id));
-        if(tid&&tid!==setDrag.id&&!descIds.has(tid)) targetFrame.classList.add('drop-target');
-      }
-      } // end if(setDrag.collapsed)
       didMove=true; return;
     }
     if(lasso){
@@ -851,11 +878,8 @@ function initGraphInteraction(svg, lay){
       const w=Math.abs(sc.x-lasso.startSvg.x), h=Math.abs(sc.y-lasso.startSvg.y);
       lasso.rect.setAttribute('x',x); lasso.rect.setAttribute('y',y);
       lasso.rect.setAttribute('width',w); lasso.rect.setAttribute('height',h);
-      const lInsideId=lasso.insideSetId;
-      const lDescIds=lInsideId?new Set(allNodesInSet(lInsideId).map(n=>n.id)):null;
-      svg.querySelectorAll(lInsideId?'#graph .node.inset':'#graph .node:not(.inset)').forEach(n=>{
+      svg.querySelectorAll('#graph .node').forEach(n=>{
         const id=n.dataset.id;
-        if(lDescIds&&!lDescIds.has(id))return;
         const p=lay.nodePos[id]||center(id);
         const inside=p&&p.x>=x&&p.x<=x+w&&p.y>=y&&p.y<=y+h;
         n.classList.toggle('multi-sel',inside);
@@ -872,11 +896,8 @@ function initGraphInteraction(svg, lay){
       const r=lasso.rect;
       const lx=parseFloat(r.getAttribute('x')), ly=parseFloat(r.getAttribute('y'));
       const lw=parseFloat(r.getAttribute('width')), lh=parseFloat(r.getAttribute('height'));
-      const uInsideId=lasso.insideSetId;
-      const uDescIds=uInsideId?new Set(allNodesInSet(uInsideId).map(n=>n.id)):null;
       svg.querySelectorAll('#graph .node').forEach(n=>{
         const id=n.dataset.id;
-        if(uDescIds&&!uDescIds.has(id))return;
         const p=lay.nodePos[id];
         if(p&&p.x>=lx&&p.x<=lx+lw&&p.y>=ly&&p.y<=ly+lh){
           multiSel.add(id); n.classList.add('multi-sel');
@@ -898,32 +919,8 @@ function initGraphInteraction(svg, lay){
       }
       connectSrc=null; return;
     }
-    if(aggClick){ if(!didMove) openRelations(aggClick); aggClick=null; return; }
-    if(insetDrag){ if(!didMove) select(insetDrag.id); else renderAll(); insetDrag=null; insetClick=null; didMove=false; return; }
     if(setDrag){
-      svg.querySelectorAll('.setframe').forEach(f=>f.classList.remove('drop-target'));
-      if(!didMove){ toggleSet(setDrag.id); }
-      else {
-        // check if dropped onto a valid set frame → nest inside it
-        const hit=document.elementFromPoint(e.clientX,e.clientY);
-        const targetFrame=hit&&hit.closest('.setframe');
-        const tid=targetFrame?targetFrame.id.replace('setframe-',''):null;
-        const descIds=new Set(allDescendantSetIds(setDrag.id));
-        if(setDrag.collapsed&&tid&&tid!==setDrag.id&&!descIds.has(tid)){
-          const dragged=setById(setDrag.id);
-          if(dragged){
-            dragged.parentSetId=tid;
-            delete entityManualPos[setDrag.id];
-            renderAll();
-            toast(`"${dragged.title||'Set'}" nested inside "${setById(tid)?.title||'set'}".`);
-          }
-        } else if(!tid&&setDrag.collapsed){
-          // dragged outside all frames → un-nest (make root)
-          const dragged=setById(setDrag.id);
-          if(dragged&&dragged.parentSetId){ dragged.parentSetId=null; renderAll(); toast(`"${dragged.title||'Set'}" moved to top level.`); }
-          else renderAll();
-        } else { renderAll(); }
-      }
+      if(!didMove){ select(setDrag.id); } else { renderAll(); }
       setDrag=null; didMove=false; canvas&&canvas.classList.remove('panning'); return;
     }
     if(nodeDrag){ if(!didMove) select(nodeDrag.id); else renderAll(); nodeDrag=null; didMove=false; canvas&&canvas.classList.remove('panning'); return; }
@@ -932,12 +929,11 @@ function initGraphInteraction(svg, lay){
   svg.onpointercancel=()=>{
     if(lasso){lasso.rect.remove();lasso=null;}
     connectPreview&&connectPreview.remove(); connectPreview=null;
-    connectSrc=null; nodeDrag=null; setDrag=null; insetDrag=null; panStart=null; aggClick=null; insetClick=null;
+    connectSrc=null; nodeDrag=null; setDrag=null; panStart=null;
     canvas&&canvas.classList.remove('panning');
   };
 }
 
-/* expand / collapse a knowledge set */
 function deleteSet(id){
   const s=setById(id); if(!s)return;
   const title=s.title||'Set';
@@ -953,15 +949,11 @@ function deleteSet(id){
   data.sets=data.sets.filter(s=>!descSetIds.has(s.id));
   descSetIds.forEach(sid=>delete entityManualPos[sid]);
   if(descSetIds.has(selected)) selected=null;
+  // reset universe if we deleted the current universe or an ancestor
+  if(currentUniverseId && descSetIds.has(currentUniverseId)) currentUniverseId=null;
   closeRelations(); renderAll();
   toast(`Deleted "${title}" and all nested sets.`);
 }
-function toggleSet(id){
-  const s=setById(id); if(!s)return;
-  const lay=layoutGraph(); const cur=entityManualPos[id]||lay.entPos[id];
-  if(cur) entityManualPos[id]={x:cur.x,y:cur.y};
-  s.collapsed=!s.collapsed; selected=null; closeRelations(); renderAll();
-  toast(s.collapsed?`Collapsed "${s.title}"`:`Expanded "${s.title}"`);}
 
 /* relations panel */
 function openRelations(pathEl){
@@ -977,7 +969,7 @@ function openRelations(pathEl){
   if(info.forward.length) html+=`<div class="rp-group"><div class="rp-glabel">${esc(nameA)} → ${esc(nameB)} <span class="tag">(${info.forward.length})</span></div>${info.forward.map(linkRow).join('')}</div>`;
   if(info.backward.length) html+=`<div class="rp-group"><div class="rp-glabel">${esc(nameB)} → ${esc(nameA)} <span class="tag">(${info.backward.length})</span></div>${info.backward.map(linkRow).join('')}</div>`;
   const body=$('#rpBody'); body.innerHTML=html;
-  body.querySelectorAll('.rp-link').forEach(b=>b.onclick=()=>{const id=b.dataset.to||b.dataset.from; const s=setOfNode(id); if(s&&s.collapsed){s.collapsed=false;renderAll();} select(id);});
+  body.querySelectorAll('.rp-link').forEach(b=>b.onclick=()=>{const id=b.dataset.to||b.dataset.from; select(id);});
   $('#relPanel').classList.add('open');
 }
 function closeRelations(){const p=$('#relPanel'); if(p)p.classList.remove('open');}
@@ -999,6 +991,16 @@ function renderDetailPanel(){
         ${setMembers(s).map(m=>`<div style="font-size:12px;padding:3px 0;color:var(--ink)">${kindLabel(m.kind)}: ${m.title.split('(')[0].trim()}</div>`).join('')}
       </div>`;
     $('#dpEdit').style.display='none';
+    // "Enter universe" button
+    let enterBtn=$('#dpEnterSet');
+    if(!enterBtn){
+      enterBtn=document.createElement('button'); enterBtn.id='dpEnterSet'; enterBtn.className='btn primary';
+      enterBtn.textContent='→ Enter';
+      const dpActions=$('#dpEdit').parentNode;
+      dpActions.insertBefore(enterBtn, dpActions.firstChild);
+    }
+    enterBtn.style.display=''; enterBtn.onclick=()=>enterUniverse(selected);
+    // export button
     let expBtn=$('#dpExportSet');
     if(!expBtn){
       expBtn=document.createElement('button'); expBtn.id='dpExportSet'; expBtn.className='btn';
@@ -1008,6 +1010,7 @@ function renderDetailPanel(){
     return;
   }
   const expBtn=$('#dpExportSet'); if(expBtn) expBtn.style.display='none';
+  const enterBtn=$('#dpEnterSet'); if(enterBtn) enterBtn.style.display='none';
   $('#dpEdit').style.display='';
   if(!n){panel.classList.remove('open');return;}
   panel.classList.add('open');
@@ -1069,33 +1072,40 @@ function renderDetailPanel(){
 
 /* ===================== autosave ===================== */
 function saveAll(){
-  try{
-    if(activeProjectId){
-      projectData[activeProjectId]=clone(data);
-      projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
-    }
-    localStorage.setItem('margin-autosave',JSON.stringify(
-      {projects,projectData,activeProjectId,projCounter,setCounter,projManualPos}));
-  }catch(e){}
+  if(activeProjectId){
+    projectData[activeProjectId]=clone(data);
+    projManualPos[activeProjectId]={entity:clone(entityManualPos),node:clone(nodeManualPos)};
+  }
+  const payload=JSON.stringify({projects,projectData,activeProjectId,projCounter,setCounter,projManualPos,currentUniverseId});
+  if(window.marginFS){
+    window.marginFS.save(payload).catch(()=>{});
+    try{localStorage.removeItem('margin-autosave');}catch(e){}  // clear stale fallback data
+  } else try{localStorage.setItem('margin-autosave',payload);}catch(e){}
 }
-function loadAll(){
+async function loadAll(){
   try{
-    const raw=localStorage.getItem('margin-autosave'); if(!raw)return false;
-    const s=JSON.parse(raw);
-    if(!s.projects?.length||!s.activeProjectId||!s.projectData?.[s.activeProjectId])
-      {localStorage.removeItem('margin-autosave');return false;}
+    const raw=window.marginFS ? await window.marginFS.load() : localStorage.getItem('margin-autosave');
+    if(!raw)return false;
+    let s=JSON.parse(raw);
+    if(typeof s==='string') s=JSON.parse(s); // migrate legacy double-encoded files
+    if(!s.projects?.length) return false;
     projects.length=0; s.projects.forEach(p=>projects.push(p));
     Object.keys(projectData).forEach(k=>delete projectData[k]);
-    Object.assign(projectData,s.projectData);
+    Object.assign(projectData,s.projectData||{});
     Object.keys(projManualPos).forEach(k=>delete projManualPos[k]);
     Object.assign(projManualPos,s.projManualPos||{});
     projCounter=s.projCounter||1; setCounter=s.setCounter||0;
-    activeProjectId=s.activeProjectId;
-    data=projectData[activeProjectId];
-    if(!data.sets)data.sets=[];
-    const pos=projManualPos[activeProjectId]||{entity:{},node:{}};
-    Object.assign(entityManualPos,pos.entity||{});
-    Object.assign(nodeManualPos,pos.node||{});
+    currentUniverseId=s.currentUniverseId||null;
+    // restore active project only if it still exists in projectData
+    const restoredId=s.activeProjectId&&projectData[s.activeProjectId]?s.activeProjectId:null;
+    activeProjectId=restoredId;
+    if(activeProjectId){
+      data=projectData[activeProjectId];
+      if(!data.sets)data.sets=[];
+      const pos=projManualPos[activeProjectId]||{entity:{},node:{}};
+      Object.assign(entityManualPos,pos.entity||{});
+      Object.assign(nodeManualPos,pos.node||{});
+    }
     return true;
   }catch(e){return false;}
 }
@@ -1105,6 +1115,7 @@ function renderAll(){
   if(!activeProjectId) return;
   derive(); renderGraph(); renderDetailPanel(); renderLegend(); updateProgress();
   $('#docName').innerHTML='project · <b>'+(data.project?.title||'Untitled')+'</b>';
+  renderBreadcrumb();
   renderProjList();
   saveAll();
 }
@@ -1242,20 +1253,36 @@ function closeGsPreview(){$('#gsPreviewScrim').classList.remove('open');gsPrevie
 function importGlobalSet(gsid, dropPos){
   const gs=globalSets.find(g=>g.id===gsid); if(!gs)return;
   setCounter++;
-  const sid='set'+setCounter;
+  const prefix='set'+setCounter;
   const color=SET_COLORS[(setCounter-1)%SET_COLORS.length];
-  const idMap={};
-  gs.nodes.forEach(n=>{idMap[n.id]=sid+':'+n.id;});
+  const nodeIdMap={};
+  gs.nodes.forEach(n=>{nodeIdMap[n.id]=prefix+':'+n.id;});
+  const setIdMap={};
+  (gs.sets||[]).forEach(s=>{setIdMap[s.id]=prefix+':s:'+s.id;});
+  const nodeToSet={};
+  (gs.sets||[]).forEach(s=>{(s.nodeIds||[]).forEach(nid=>{nodeToSet[nid]=s.id;});});
+  data.sets=data.sets||[];
+  (gs.sets||[]).forEach(s=>{
+    data.sets.push({
+      id:setIdMap[s.id],title:s.title,color,
+      parentSetId:s.parentSetId?setIdMap[s.parentSetId]:null,
+      nodeIds:(s.nodeIds||[]).map(nid=>nodeIdMap[nid]).filter(Boolean)
+    });
+  });
   const imported=gs.nodes.map(n=>{
-    const nn=clone(n); nn.id=idMap[n.id]; nn.setId=sid;
-    nn.uses=(n.uses||[]).map(u=>idMap[u]||u);
-    if(nn.proof) nn.proof.uses=(n.proof.uses||[]).map(u=>idMap[u]||u);
+    const nn=clone(n); nn.id=nodeIdMap[n.id];
+    const bpSet=nodeToSet[n.id];
+    nn.setId=bpSet?setIdMap[bpSet]:null;
+    nn.uses=(n.uses||[]).map(u=>nodeIdMap[u]||u);
+    if(nn.proof) nn.proof.uses=(n.proof.uses||[]).map(u=>nodeIdMap[u]||u);
     return nn;
   });
-  data.sets=data.sets||[];
-  data.sets.push({id:sid,title:gs.name,color,collapsed:true,nodeIds:imported.map(n=>n.id)});
   data.nodes.push(...imported);
-  if(dropPos) entityManualPos[sid]={x:dropPos.x, y:dropPos.y};
+  if(dropPos){
+    const rootSets=(gs.sets||[]).filter(s=>!s.parentSetId);
+    if(rootSets.length>0) entityManualPos[setIdMap[rootSets[0].id]]={x:dropPos.x,y:dropPos.y};
+    else if(imported.length>0) entityManualPos[imported[0].id]={x:dropPos.x,y:dropPos.y};
+  }
   selected=null; renderAll();
   toast(`Imported "${gs.name}" into project (${imported.length} nodes).`);
 }
@@ -1358,10 +1385,27 @@ function fitGraph(){
   const lay=layoutGraph();
   const svg=$('#graph'); const r=svg.getBoundingClientRect();
   if(!r.width||!r.height)return;
+  // Compute actual bounding box from all entity positions (including manual overrides)
+  // Also account for stub row above (y can be negative)
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  const STUB_Y=-70, STUB_H=28;
+  const stubs=universeSets().length>0||universeNodes().some(n=>{
+    return [...(n.uses||[]),...(n.proof?.uses||[])].some(uid=>!nodeToUniverseEntity(uid));
+  });
+  if(stubs){ minY=Math.min(minY,STUB_Y-STUB_H/2-10); }
+  lay.entities.forEach(id=>{
+    const pos=lay.entPos[id]; if(!pos)return;
+    const meta=lay.entMeta[id]||{};
+    const hw=(meta.w||180)/2, hh=(meta.h||40)/2;
+    minX=Math.min(minX,pos.x-hw); minY=Math.min(minY,pos.y-hh);
+    maxX=Math.max(maxX,pos.x+hw); maxY=Math.max(maxY,pos.y+hh);
+  });
+  if(!isFinite(minX)){minX=0;minY=0;maxX=lay.W;maxY=lay.H;}
+  const bW=maxX-minX||1, bH=maxY-minY||1;
   const pad=48;
-  const scaleX=(r.width-pad*2)/lay.W, scaleY=(r.height-pad*2)/lay.H;
+  const scaleX=(r.width-pad*2)/bW, scaleY=(r.height-pad*2)/bH;
   graphZoom=Math.min(scaleX,scaleY,1);
-  graphPan={x:(r.width-lay.W*graphZoom)/2, y:pad};
+  graphPan={x:(r.width-bW*graphZoom)/2-minX*graphZoom, y:pad-minY*graphZoom};
   const p=$('#graph-pan'); if(p)p.setAttribute('transform',`translate(${graphPan.x},${graphPan.y}) scale(${graphZoom})`);
 }
 $('#zoomReset').onclick=()=>fitGraph();
@@ -1440,7 +1484,9 @@ $('#loadJson').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new F
     Object.keys(data).forEach(k=>delete data[k]);
     Object.assign(data,d);
     if(!data.sets)data.sets=[];
-    selected=null;syncProjName();renderAll();toast('Loaded '+data.nodes.length+' nodes from '+f.name);}
+    Object.keys(entityManualPos).forEach(k=>delete entityManualPos[k]);
+    Object.keys(nodeManualPos).forEach(k=>delete nodeManualPos[k]);
+    selected=null;syncProjName();derive();renderAll();setTimeout(fitGraph,0);toast('Loaded '+data.nodes.length+' nodes from '+f.name);}
     catch(err){toast('Couldn\'t parse that file — expected blueprint.json with a "nodes" array.');}};
   r.readAsText(f);e.target.value='';};
 $('#dlJson').onclick=()=>{
@@ -1452,10 +1498,10 @@ $('#dlJson').onclick=()=>{
 $('#resetJson').onclick=()=>{
   const fresh=clone(SAMPLE); if(!fresh.sets)fresh.sets=[];
   Object.keys(data).forEach(k=>delete data[k]); Object.assign(data,fresh);
-  selected=null;syncProjName();renderAll();toast('Reset to the Finsler sample.');
+  selected=null;syncProjName();derive();renderAll();setTimeout(fitGraph,0);toast('Reset to the Finsler sample.');
 };
 
-/* import a blueprint JSON as a collapsible knowledge set */
+/* import a blueprint JSON preserving nested set hierarchy */
 $('#importSet').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
@@ -1464,23 +1510,35 @@ $('#importSet').onchange=e=>{
       const d=JSON.parse(r.result);
       if(!d.nodes||!Array.isArray(d.nodes))throw 0;
       setCounter++;
-      const sid='set'+setCounter;
+      const prefix='set'+setCounter;
       const color=SET_COLORS[(setCounter-1)%SET_COLORS.length];
-      const idMap={};
-      d.nodes.forEach(n=>{ idMap[n.id]=sid+':'+n.id; });
+      const nodeIdMap={};
+      d.nodes.forEach(n=>{ nodeIdMap[n.id]=prefix+':'+n.id; });
+      const setIdMap={};
+      (d.sets||[]).forEach(s=>{ setIdMap[s.id]=prefix+':s:'+s.id; });
+      const nodeToSet={};
+      (d.sets||[]).forEach(s=>{ (s.nodeIds||[]).forEach(nid=>{ nodeToSet[nid]=s.id; }); });
+      data.sets=data.sets||[];
+      (d.sets||[]).forEach(s=>{
+        data.sets.push({
+          id:setIdMap[s.id],title:s.title,color,
+          parentSetId:s.parentSetId?setIdMap[s.parentSetId]:null,
+          nodeIds:(s.nodeIds||[]).map(nid=>nodeIdMap[nid]).filter(Boolean)
+        });
+      });
       const imported=d.nodes.map(n=>{
         const nn=clone(n);
-        nn.id=idMap[n.id];
-        nn.setId=sid;
-        nn.uses=(n.uses||[]).map(u=>idMap[u]||u);
-        if(nn.proof) nn.proof.uses=(n.proof.uses||[]).map(u=>idMap[u]||u);
+        nn.id=nodeIdMap[n.id];
+        const bpSet=nodeToSet[n.id]||(n.setId&&setIdMap[n.setId]?n.setId:null);
+        nn.setId=bpSet?setIdMap[bpSet]:null;
+        nn.uses=(n.uses||[]).map(u=>nodeIdMap[u]||u);
+        if(nn.proof) nn.proof.uses=(n.proof.uses||[]).map(u=>nodeIdMap[u]||u);
         return nn;
       });
-      data.sets=data.sets||[];
-      data.sets.push({id:sid,title:d.project?.title||f.name.replace(/\.json$/,''),color,collapsed:true,nodeIds:imported.map(n=>n.id)});
       data.nodes.push(...imported);
       selected=null; renderAll();
-      toast('Imported "'+data.sets[data.sets.length-1].title+'" as a knowledge set ('+imported.length+' nodes).');
+      const rootCount=(d.sets||[]).filter(s=>!s.parentSetId).length;
+      toast(`Imported "${d.project?.title||f.name.replace(/\.json$/,'')}" (${imported.length} nodes, ${rootCount} top-level sets).`);
     }catch(err){toast('Couldn\'t parse — expected blueprint.json with a "nodes" array.');}
   };
   r.readAsText(f); e.target.value='';
@@ -1699,12 +1757,6 @@ function typeset(node){if(window.renderMathInElement){try{renderMathInElement(no
 
 /* ===================== project sidebar ===================== */
 (function initProjects(){
-  projCounter=1;
-  const firstId='proj1';
-  projects.push({id:firstId,name:data.project?.title||'Finsler Systolic'});
-  projectData[firstId]=data;
-  activeProjectId=firstId;
-  projManualPos[firstId]={entity:{},node:{}};
 
   const sidebar=$('#projSidebar');
   $('#psToggle').onclick=()=>{
@@ -2403,10 +2455,10 @@ function openProjectDetail(pid){
   document.getElementById('hdDelete').onclick=()=>{ det.classList.remove('open'); deleteProject(pid); renderHomePage(); };
 }
 
-function boot(){
+async function boot(){
   loadPrefs();
   loadActivity();
-  if(loadAll()) syncProjName();
+  if(await loadAll()) syncProjName();
   showHome();        // hides canvas, renders home page + sidebar
   renderProjList();  // populate sidebar regardless
   if(activeProjectId) derive(); // pre-derive so canvas is ready when opened

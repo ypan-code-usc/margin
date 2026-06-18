@@ -212,16 +212,15 @@ path.connect-preview{stroke:var(--accent);stroke-width:2;fill:none;stroke-dashar
 .nodeset text.ss-count{font-family:var(--font-ui);font-size:10px;font-weight:500;pointer-events:none}
 .nodeset .ss-ring{fill:none;stroke:var(--accent);stroke-width:2.5;opacity:0;transition:opacity .18s}
 .nodeset.sel .ss-ring{opacity:1}
-/* expanded set container frame */
-.setframe{pointer-events:none}
-.setframe .frame{fill-opacity:.5;stroke-dasharray:6 4;stroke-width:1.6;pointer-events:auto;cursor:move}
-.setframe .fhdr{pointer-events:auto;cursor:pointer}
-.setframe .fhdr-bg{fill:transparent}
-.setframe .fhdr:hover .fhdr-bg{fill:rgba(0,0,0,.06)}
-.setframe text.ftitle{font-family:var(--font-ui);font-size:11.5px;font-weight:700;pointer-events:none}
-.setframe .node{pointer-events:auto}
+/* expanded set — flat SVG elements */
+.setbg{pointer-events:auto}
+.setbg.drop-target{filter:drop-shadow(0 0 8px var(--accent));fill-opacity:0.22!important}
+.setborder{pointer-events:none}
+.sethdr{pointer-events:auto;cursor:pointer}
+.sethdr .fhdr-bg{fill:transparent}
+.sethdr:hover .fhdr-bg{fill:rgba(0,0,0,.06)}
+.sethdr text.ftitle{font-family:var(--font-ui);font-size:11.5px;font-weight:700;pointer-events:none}
 .node.inset .body{stroke-dasharray:none}
-.setframe.drop-target .frame{stroke-width:3;fill-opacity:.18;filter:drop-shadow(0 0 6px var(--accent))}
 
 /* relations panel (left slide-in) */
 .relations-panel{width:360px;flex:none;position:absolute;left:0;top:0;bottom:0;z-index:11;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden;transform:translateX(-100%);transition:transform .22s ease;box-shadow:8px 0 30px rgba(40,34,24,.06)}
@@ -514,3 +513,61 @@ path.connect-preview{stroke:var(--accent);stroke-width:2;fill:none;stroke-dashar
 .import-paper-upload{display:flex;align-items:center;gap:10px}
 .import-paper-file-btn{position:relative;cursor:pointer;flex:none}
 .import-paper-or{font-size:12px;color:var(--ink-faint)}
+
+/* Universe breadcrumb */
+.universe-breadcrumb {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border, var(--line));
+  border-radius: 20px;
+  padding: 4px 12px;
+  z-index: 20;
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+}
+.bc-crumb {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.bc-crumb:hover { background: var(--accent-soft); }
+.bc-crumb.bc-current { color: var(--ink-faint); cursor: default; }
+.bc-sep { color: var(--ink-faint); font-size: 11px; }
+
+/* Boundary stub nodes */
+.stub-node rect {
+  fill: var(--surface);
+  stroke: var(--ink-faint);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.2;
+}
+.stub-node text {
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  fill: var(--ink-faint);
+  pointer-events: none;
+}
+.stub-node .stub-sub {
+  font-size: 8.5px;
+}
+.stub-node { cursor: pointer; }
+.stub-node:hover rect { stroke: var(--accent); fill: var(--accent-soft); }
+.stub-node:hover text { fill: var(--accent); }
+
+.edge.stub-edge {
+  stroke: var(--ink-faint);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.2;
+  fill: none;
+}

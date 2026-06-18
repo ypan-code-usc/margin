@@ -35,7 +35,7 @@ cp -R node_modules/electron/dist/Electron.app dist-app/Margin.app
 
 APP=dist-app/Margin.app/Contents
 mkdir -p "$APP/Resources/app"
-cp index.html style.css app.js main.js "$APP/Resources/app/"
+cp index.html style.css app.js main.js preload.js "$APP/Resources/app/"
 cp -r vendor "$APP/Resources/app/"
 printf '{"name":"margin","version":"%s","main":"main.js"}' "$VERSION" > "$APP/Resources/app/package.json"
 
