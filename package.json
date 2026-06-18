@@ -1,6 +1,6 @@
 {
   "name": "margin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A block-based math notebook for building dependency graphs of definitions, lemmas, theorems, and remarks.",
   "main": "main.js",
   "scripts": {
